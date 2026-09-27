@@ -317,11 +317,22 @@ file build-arm64/marshland          # 期望：ELF 64-bit LSB ... ARM aarch64
 
 **已知差异（需要修订）**
 
-| 项 | 设计基线 | 当前工程 | 说明 |
-|---|---|---|---|
-| C++ 标准 | C++23（PRD / Interface / Config 均如此定义） | `CMAKE_CXX_STANDARD 17` | 顶层 `CMakeLists.txt` 当前设置为 C++17，与设计基线不一致，需改为 C++23 并同步验证 |
+当前无未修订的设计基线差异。
+
+（原登记项「C++ 标准：顶层 `CMakeLists.txt` 为 C++17、设计基线为 C++23」已于 2026-09-27 关闭：顶层已改为 `CMAKE_CXX_STANDARD 23`，`CMAKE_CXX_EXTENSIONS OFF` 保证使用严格 `-std=c++23`，全部编译单元已通过 aarch64 交叉编译验证，零警告。）
 
 **尚未建立的工程化设施**
 
 - 单元测试与 CI
 - 运行时配置基线 `Config/dart_control.json`（当前由程序在运行时生成/写回，已被 `.gitignore` 排除）
+
+**已建立的工具链守卫**
+
+顶层 `CMakeLists.txt` 在配置阶段执行 C++23 守卫，防止标准被静默降级（`CMAKE_CXX_STANDARD_REQUIRED` 只强制"请求"，编译器过旧时 CMake 仍会按 23 → 20 → 17 → 14 → 11 逐级回退并构建成功）。守卫含两项独立判据：
+
+1. CMake 特性表必须包含 `cxx_std_23`；
+2. 真实探测编译必须确认标准已生效（`static_assert(__cplusplus >= 202100L)`）。
+
+通过时打印 `C++23 support confirmed: <id> <version>`；失败时 `FATAL_ERROR` 并给出编译器路径、id/版本与 target。
+
+守卫**刻意不使用** C++23 的 `deducing this`（显式对象形参）作为探测：GCC 13.3 是可用且本项目实际使用的 C++23 工具链，但该特性到 GCC 14 才实现，以它设卡会产生误拒。

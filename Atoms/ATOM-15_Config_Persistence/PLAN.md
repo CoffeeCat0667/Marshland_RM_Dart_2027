@@ -1,4 +1,4 @@
-﻿# ATOM-15 Config Persistence 实现方案
+# ATOM-15 Config Persistence 实现方案
 
 ## 1. 目标与边界
 
@@ -45,8 +45,8 @@ ATOM-15_Config_Persistence/
 ## 5. CMake 集成方案
 
 - 本目录提供 `atom15_config_persistence` 模块目标，作为上层 `add_subdirectory(...)` 后可链接的模块化目标。
-- 当前阶段使用接口库承载公共头文件、C++17 要求和 include 路径；实现文件加入后改为实际编译目标，保持目标名和公共接口不变。
-- 不在本目录设置架构、编译器或全局编译选项；Ubuntu ARM、C++17 和警告策略继续由上层 `CMakeLists.txt` 决定。
+- 当前阶段使用接口库承载公共头文件、C++23 要求和 include 路径；实现文件加入后改为实际编译目标，保持目标名和公共接口不变。
+- 不在本目录设置架构、编译器或全局编译选项；Ubuntu ARM、C++23 和警告策略继续由上层 `CMakeLists.txt` 决定。
 - 不创建可执行文件，不定义 `main`。
 
 ## 6. 实现顺序

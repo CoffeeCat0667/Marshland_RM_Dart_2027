@@ -1,4 +1,4 @@
-﻿# ATOM-01_Runtime 实现方案（初稿）
+# ATOM-01_Runtime 实现方案（初稿）
 
 > 编制日期：2026-09-27
 > 依据：`AGENTS.md` 与 `Design/Atomic/ATOM-01_Runtime.md`
@@ -57,6 +57,20 @@
 ## 5. 当前实现状态
 
 已完成第一阶段和第二阶段的基础实现：`RuntimeCoordinator`、生命周期模块接口、逐步启动结果、安全门控、失败回滚和关闭释放逻辑已落地。具体硬件/服务适配器仍通过 `ILifecycleModule` 接入。
+
+已修复的既有缺陷（详见 `BugLists.md` §5.6、§5.7）：`ATOM01-BUG-002`（移除会锁死手动/调试/校准的本地状态判据）、`ATOM01-BUG-003`（`Stopped` 允许重启）、`ATOM01-BUG-004`（`start()` 全流程异常保护并声明为 `noexcept`）、`ATOM01-BUG-005`（`ModuleRegistration` 补默认值）、`ATOM01-BUG-007`（共享契约定入 `Atoms/Public/ILifecycle.hpp`）、`ATOM01-BUG-009`（改为 1 步骤 : N 模块，并提供 `lastRegistrationError()`）。
+
+`ATOM01-BUG-008` 的事件公共契约已定义于 `Design/LifecycleEvents.md`（代码侧实施待授权）；`ATOM01-BUG-001` 按现有分层设计不修复，`ATOM01-BUG-006` 因越权/跨 Atom 不实施。
+
+### 5.1 与业务状态机的关系（`ATOM01-BUG-010` 结论）
+
+本模块**不驱动**业务 `SystemMode`，也不持有 `StateArbitrator`：
+
+- `RuntimeState`（含 `Standby`）只表示"硬件与服务是否已拉起"，是 ATOM-01 私有的生命周期细分，**不等于** `SystemMode::STANDBY`。
+- 启动结果到业务模式的映射、以及"启动前推进 `INITIALIZING`"，统一由装配层 `Atoms/Public/AppCoordinator` 在调用 `start()` 之前/之后完成（`UNINITIALIZED -> INITIALIZING -> STANDBY / INIT_FAILED`）。
+- 因此**不**在 `start()` 内新增"开始初始化"通知回调：那会使状态驱动源分裂为两处，形成与状态机并存的"第二真相"。
+
+依赖方向保持 `Atom -> Public`，本模块不反向依赖 ATOM-02 或 AppCoordinator。
 
 ## 6. 待确认事项
 
