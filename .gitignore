@@ -1,0 +1,58 @@
+# ============================================================================
+# Marshland — Git 排除项
+# 目标平台为 Ubuntu ARM，开发在 Windows + WSL 下进行
+# ============================================================================
+
+# ---- CMake / CLion 构建产物 -------------------------------------------------
+cmake-build-*/
+build/
+build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+
+# ---- 编译产物 ---------------------------------------------------------------
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.d
+*.dwo
+*.gcda
+*.gcno
+*.gcov
+
+# ---- IDE / 编辑器（含本地工具链与 profile 配置，不共享） ---------------------
+.idea/
+.vscode/
+.cache/
+*.iml
+*.swp
+*~
+
+# ---- 运行时产物（见 Design/Config.md 第 13、16 章） -------------------------
+# 运行期配置由程序加载并写回，属机器本地状态，不入库
+Config/dart_control.json
+Logs/
+
+# ---- 操作系统文件 -----------------------------------------------------------
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---- 临时与备份文件 ---------------------------------------------------------
+*.tmp
+*.bak
+*.orig
+*.rej

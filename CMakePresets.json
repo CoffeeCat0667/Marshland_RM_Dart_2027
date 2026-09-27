@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "arm64-debug",
+      "displayName": "WSL aarch64 cross compile (Debug)",
+      "description": "Cross-compile for the Ubuntu ARM target with the WSL aarch64 toolchain. No absolute paths: every path below is derived from ${sourceDir}, so this file works on any machine and any checkout. Requires the CLion WSL toolchain whose C/C++ compilers are /usr/bin/aarch64-linux-gnu-gcc and /usr/bin/aarch64-linux-gnu-g++, named under vendor below.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/cmake-build-arm64-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/aarch64-linux-gnu.toolchain.cmake"
+      },
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "WSL-Ubuntu2404-ARM"
+        }
+      }
+    },
+    {
+      "name": "arm64-release",
+      "inherits": "arm64-debug",
+      "displayName": "WSL aarch64 cross compile (Release)",
+      "description": "Same as arm64-debug with CMAKE_BUILD_TYPE=Release.",
+      "binaryDir": "${sourceDir}/cmake-build-arm64-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "arm64-debug",
+      "configurePreset": "arm64-debug"
+    },
+    {
+      "name": "arm64-release",
+      "configurePreset": "arm64-release"
+    }
+  ]
+}
