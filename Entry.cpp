@@ -125,7 +125,6 @@ int main()
     // When those threads exist, block here (for example on a signal-driven
     // condition variable) instead of returning immediately.
     // ---------------------------------------------------------------------
-
     app.Shutdown();
     return 0;
 }
