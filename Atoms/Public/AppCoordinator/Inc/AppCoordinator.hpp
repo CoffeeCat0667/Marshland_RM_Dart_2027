@@ -35,21 +35,17 @@
 //
 // 生命周期前置条件：
 //   必须**先**完成模块注册，再调用 Start()。Start() 只负责"拉起 + 映射"。
+//   注册表为空时 Start() 拒绝启动（见 kRuntimeStartFailed 的说明）。
 //   **不支持运行中重启**（产品裁决 2026-09-27）：Start() 只允许成功调用一次，
 //   之后必须重启进程。详见 kRestartNotSupported。
 //
-// 缺陷状态（与 Atoms/ATOM-02_State_Arbitration/BugLists.md 同步）：
-//   ATOM02-BUG-001 自动流程 FORCE -> SHOT_N_YAW 缺边
-//       -> 已在 ATOM-02 源头修复（ShotStage 消歧 + current_shot），本层不补偿
-//   ATOM02-BUG-002 发射授权以控制源 rank 比较代替授权优先级
-//       -> 已按方案 B 修复：授权函数只做前置条件复核，
-//          优先级由 StateArbitrator::SubmitIntent 的 FIRE 分支仲裁
-//   ATOM02-BUG-003 手动/调试模式的 fire_once 无合法提交路径
-//       -> 已修复：StateArbitrator::AuthorizeManualFire()
-//   ATOM02-BUG-004 ConfirmSoftwareEstop() 立即清零急停变量
-//       -> 已修复：确认与解除分离；ATOM-14 完成解除动作后调用
-//          ReleaseSoftwareEstopLatch()，本层不得据此提前恢复执行器
-//          （本层的对应措施见 RunGateReason::ESTOP_LATCHED）
+// 上游缺陷追踪（**不在本文件复制 Bug 状态**，避免与上游文档产生第二份真相）：
+//   * 各 ATOM 未修复缺陷 → 见对应 `Atoms/ATOM-NN_*/BugLists.md`
+//     （该文件按维护约定只登记未修复项）。
+//   * 本层相关的**行为契约**（而非 Bug 状态）在本文件内直接说明，例如
+//     RunGateReason::ESTOP_LATCHED 的来源与含义。
+//   * `ATOM02-BUG-016` 已修复：业务模式可操作集合由 ATOM-02 导出
+//     （`state_arbitration::IsOperationalMode()`），本层直接调用、不再保留副本。
 // ============================================================================
 #pragma once
 
@@ -105,14 +101,11 @@ class AppCoordinator final {
 public:
     // 错误码（与既有风格的短常量保持一致；后续可迁移至统一 Result 类型）
     static constexpr int kOk = 0;
-    static constexpr int kInvalidArgument = -1;      // clock == nullptr
-    static constexpr int kRuntimeStartFailed = -2;   // 硬件/服务启动失败
+    static constexpr int kRuntimeStartFailed = -2;   // 硬件/服务启动失败，或注册表为空
     static constexpr int kAlreadyStarted = -3;       // 重复调用 Start()（尚未 Shutdown）
     static constexpr int kPreconditionFailed = -4;   // 状态机拒绝了 INITIALIZING 迁移
     // 运行中重启不支持（产品裁决 2026-09-27，见 Atoms/ATOM-02_State_Arbitration/
-    // BugLists.md ATOM02-BUG-015）：Shutdown() 之后再次 Start() 一律拒绝，
-    // 必须重启进程。这样即使底层 RuntimeCoordinator 仍支持 Stopped -> Created，
-    // 本层也不会把它变成一个业务上不可用的"半初始化"状态。
+    // BugLists.md ATOM02-BUG-015）：Start() 只允许成功调用一次，之后必须重启进程。
     static constexpr int kRestartNotSupported = -5;
 
     // detail 为可选输出；调用方传 nullptr 表示不关心细节。
@@ -132,6 +125,13 @@ public:
     // 拉起硬件与服务，并把启动结果映射为系统模式。
     // 成功：SystemMode -> STANDBY，hardware_ready() == true
     // 失败：SystemMode -> INIT_FAILED，hardware_ready() == false
+    //
+    // **空注册表拒启**（本层安全防护，不依赖调用方自律）：
+    // RuntimeCoordinator::start() 对空模块列表会零次迭代并直接置 Standby，使
+    // succeeded() 返回 true。若本层照搬该结论，就会出现"一个设备都没初始化，
+    // 却报告硬件就绪、RunGate() 放行执行器"的**静默假就绪**。
+    // 因此 Start() 在注册表为空时返回 kRuntimeStartFailed、不推进任何状态、
+    // 也不置 hardware_ready_。
     int Start(runtime::ModuleInitResult* detail = nullptr) noexcept;
 
     // 停止硬件与服务。不改动业务模式（业务模式清理由上层决定）。
@@ -143,9 +143,11 @@ public:
     void Shutdown() noexcept;
 
     // ---- 运行闸门（本层唯一的目的：让上层有一个统一的判据） --------------
-    // 注意：本闸门是**普通执行器动作**的闸门。RECOVERY 与 SOFTWARE_ESTOP 下由
-    // ATOM-14 发起的"安全动作"（零力矩、换弹抬起、蓄力回零）走
-    // IntentKind::SAFETY 豁免路径，不经过本闸门。
+    // 注意：本闸门是**普通执行器动作**的闸门。安全动作分两类，均不经过本闸门：
+    //   * `IntentKind::SAFETY`（**不出力**：零力矩报文）——急停锁定阶段即可放行；
+    //   * `IntentKind::SAFETY_RECOVERY`（**出力**：换弹抬起、蓄力回零、一般故障恢复动作）
+    //     ——仅在人工确认之后（`SystemMode != SOFTWARE_ESTOP`）才放行。
+    // 锁定阶段**不**放行任何出力动作，包括换弹抬起（ATOM02-BUG-017）。
     RunGateReason RunGate() const noexcept;
     bool CanRunActuators() const noexcept;
 

@@ -9,7 +9,7 @@
 | 程序代号 | Marshland |
 | 状态 | 启用 |
 | 来源 | PRD 6、8.6、11、13；PEF 2、4、5、9、10；Interface 9.3、10；Config 4、5、10、14 |
-| 同步基线 | PRD 0.9、PEF 1.4、Interface 1.4、Config 0.7；2026-09-26 |
+| 同步基线 | PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8；2026-10-10 |
 
 ## 单一职责
 

@@ -15,26 +15,12 @@
 // ============================================================================
 #include "AppCoordinator.hpp"
 
+#include <memory>
+
 namespace marshland::app {
 
-namespace {
-
-// Interface §7.1 + ATOM-02 的 IsOperationalMode() 语义。
-//
-// 刻意**不**包含 RECOVERY 与 SOFTWARE_ESTOP：恢复期与急停期的安全动作走
-// IntentKind::SAFETY 豁免路径，而不是放宽本闸门（ATOM02-BUG-007）。
-//
-// 已知漂移风险：ATOM-02 中的同名函数位于其 .cpp 的匿名命名空间内，无法导出
-// 复用，故此处保留一份等价副本。若 ATOM-02 调整该模式集合，本副本必须同步
-// （见 Atoms/ATOM-02_State_Arbitration/BugLists.md）。
-bool IsOperationalMode(SystemMode mode) noexcept
-{
-    return mode == SystemMode::STANDBY || mode == SystemMode::MANUAL ||
-           mode == SystemMode::AUTO_FIRE || mode == SystemMode::DEBUG ||
-           mode == SystemMode::CALIBRATION;
-}
-
-} // namespace
+// Interface §7.1 的"业务模式是否可操作"判据唯一来源是 ATOM-02：
+// `state_arbitration::IsOperationalMode()`（ATOM02-BUG-016 已修复，本层不再保留副本）。
 
 AppCoordinator::AppCoordinator(runtime::RuntimeCoordinator& runtime,
                                state_arbitration::StateArbitrator& authority,
@@ -44,7 +30,8 @@ AppCoordinator::AppCoordinator(runtime::RuntimeCoordinator& runtime,
     , clock_(clock)
 {
     // 不再需要在本层预置停止发射标志：ATOM-02 的 ExternalInputs 已按
-    // Design/Config.md §2 将 stop_fire 初值改为 true（ATOM02-BUG-005 修复）。
+    // Design/Config.md §2 规定 stop_fire 初值为 true，ATOM-02 的 ExternalInputs
+    // 已按该规定初始化，故本层无需再预置（本层也不持有输入副本）。
     // 本层不持有输入副本，因此也没有副本漂移问题。
 }
 
@@ -81,6 +68,27 @@ int AppCoordinator::Start(runtime::ModuleInitResult* detail) noexcept
             detail->error_message += marshland::ToString(authority_.system_mode());
         }
         return kRestartNotSupported;
+    }
+
+    // 空注册表拒启（静默假就绪防护）。
+    //
+    // RuntimeCoordinator::start() 对空模块列表零次迭代后直接置 Standby，
+    // succeeded() 因而返回 true。若本层照搬该结论，链路会变成
+    //   零模块 -> Standby -> hardware_ready_=true -> RunGate()==ALLOWED
+    // 即"一个设备都没初始化却放行执行器"，且不崩溃、难以察觉。
+    // 因此这里主动拒绝：不推进状态、不置 hardware_ready_、不调用 applyStartupOutcome。
+    // 注意 started_ 仍置 true —— 本次调用已经消耗掉"唯一一次启动机会"。
+    if (runtime_.stepResults().empty()) {
+        started_ = true;
+        if (detail != nullptr) {
+            detail->success = false;
+            detail->module_name = "app-coordinator";
+            detail->error_message =
+                "refusing to start: no ILifecycleModule is registered; an empty registry "
+                "would report hardware-ready with nothing initialised (ATOM-03..ATOM-19 "
+                "have no implementation yet)";
+        }
+        return kRuntimeStartFailed;
     }
 
     // 1) 业务侧进入"初始化中"。
@@ -159,9 +167,10 @@ RunGateReason AppCoordinator::RunGate() const noexcept
 {
     // 顺序即安全优先级：急停锁存 > 硬件就绪 > 阻断故障 > 初始化/模式状态。
     //
-    // 急停锁存单独判定，而不是依赖 IsOperationalMode：ATOM02-BUG-004 的修复把
-    // 人工确认改为"只做模式迁移、保持锁存为 True"，因此确认之后模式已是 MANUAL
-    // 而急停变量与锁存仍为 True。若只看模式，解除动作完成前执行器就会被放行，
+    // 急停锁存单独判定，而不是依赖 IsOperationalMode：ATOM-02 的急停语义是
+    // （可操作集合本身由 state_arbitration::IsOperationalMode 给出）
+    // 人工确认"只做模式迁移、保持锁存与急停变量为 True"，因此确认之后模式已是
+    // MANUAL 而锁存仍为 True。若只看模式，解除动作完成前执行器就会被放行，
     // 违反 Config §15 / PEF §8.3（解除动作完成后才允许恢复）。
     if (authority_.is_estop_latched()) {
         return RunGateReason::ESTOP_LATCHED;
@@ -177,7 +186,7 @@ RunGateReason AppCoordinator::RunGate() const noexcept
     if (authority_.system_mode() == SystemMode::UNINITIALIZED) {
         return RunGateReason::NOT_INITIALIZED;
     }
-    if (!IsOperationalMode(authority_.system_mode())) {
+    if (!state_arbitration::IsOperationalMode(authority_.system_mode())) {
         return RunGateReason::MODE_NOT_OPERATIONAL;
     }
     return RunGateReason::ALLOWED;

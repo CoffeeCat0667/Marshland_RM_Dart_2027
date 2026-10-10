@@ -67,25 +67,40 @@ SystemMode system_mode() const noexcept;
 AutoFireState auto_fire_state() const noexcept;
 ```
 
-### 2.4 安全动作必须走 SAFETY 意图
+### 2.4 安全动作按「是否出力」分两类提交（ATOM02-BUG-017 后）
 
 ```cpp
 IntentDecision SubmitIntent(const ControlIntent& intent) noexcept;
 ```
 
-`IntentKind::SAFETY` 在 `EvaluateIntent` 中位于**急停 / 故障 / 模式闸门之前**，无条件放行：
+两个安全意图类别都在 `EvaluateIntent` 中位于**故障 / 模式闸门之前**，但按急停阶段区分是否允许出力
+（`IntentKind` 定义见 `Atoms/Public/StateArbitrationTypes.hpp`）：
 
 ```cpp
-// StateArbitration.cpp（ATOM02-BUG-007）
-if (intent.kind == IntentKind::SAFETY) {
+// StateArbitration.cpp（ATOM02-BUG-007/017）
+if (intent.kind == IntentKind::SAFETY) {              // 不出力：零力矩报文等
+    decision.accepted = true;                         // 急停锁定阶段也允许
+    return decision;
+}
+if (intent.kind == IntentKind::SAFETY_RECOVERY) {     // 出力：换弹抬起、蓄力回零、
+    if (ctx.system_mode == SystemMode::SOFTWARE_ESTOP) {   // 故障恢复动作
+        decision.reason = RejectReason::SOFTWARE_ESTOP;    // 锁定阶段禁止出力
+        return decision;
+    }
     decision.accepted = true;
     return decision;
 }
 ```
 
-因此：**零力矩、换弹抬起、人工确认后的蓄力双电机回零、一般故障恢复动作，全部必须以
-`IntentKind::SAFETY` 提交**。用普通 `IntentKind::CONTROL` 提交会被
-`RejectReason::SOFTWARE_ESTOP` / `FAULT_ACTIVE` / `NOT_READY` 拒绝。
+| 动作 | 必须使用的类别 | 允许阶段 |
+|---|---|---|
+| 零力矩报文发送 | `IntentKind::SAFETY` | 急停锁定阶段即可 |
+| 换弹机构抬起、蓄力双电机回零（人工确认后的解除动作） | `IntentKind::SAFETY_RECOVERY` | **仅人工确认之后**（`SystemMode != SOFTWARE_ESTOP`） |
+| 一般故障恢复中的回零、三次发射、换弹抬起 | `IntentKind::SAFETY_RECOVERY` | `RECOVERY` / `FAULT` 期间 |
+
+用普通 `IntentKind::CONTROL` 提交会被 `RejectReason::SOFTWARE_ESTOP` / `FAULT_ACTIVE` /
+`NOT_READY` 拒绝；在锁定阶段用 `SAFETY_RECOVERY` 提交换弹抬起会被 `SOFTWARE_ESTOP` 拒绝
+（`Interface.md` §17.3 第 7 条、§18.1、`Config.md` §15、`PEF.md` §8.2 第 2 条）。
 
 ### 2.5 故障等级归约（不要自己复制一份）
 
@@ -112,7 +127,7 @@ bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;   // 已导出，�
 ### 3.2 锁定期必须持续保持的行为（`PEF.md` §8.2）
 
 1. **对所有电机持续发送零力矩 CAN 帧**，20 ms 周期，直到解除（见 §6）。
-2. 换弹机构执行**抬起**动作组。
+2. 换弹机构保持**零力矩**，不主动抬起或放下（`PEF.md` §8.2 第 2 条）；抬起只发生在人工确认后的安全恢复阶段（见 3.3）。
 3. **拒绝一切操作发射机构舵机的指令**。
 4. 禁止自动发射、连续发射和任何新的发射流程步骤。
 5. 保持锁定，直至人工确认解除。
@@ -134,7 +149,7 @@ bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;   // 已导出，�
         → 此刻**不得**恢复任何普通执行器命令
         │
         ▼
-[2] 以 IntentKind::SAFETY 提交并执行解除动作：
+[2] 以 IntentKind::SAFETY_RECOVERY 提交并执行解除动作（出力型；锁定阶段会被拒）：
         (a) 换弹机构抬起动作组（动作组角度命令发送后 500 ms 判定到位）
         (b) 蓄力机构两个电机（电机 1、2）回零
         │
@@ -156,7 +171,7 @@ bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;   // 已导出，�
 | E1 | 把 `ConfirmSoftwareEstop()` 当作"急停已解除" | `SystemMode` 已是 `MANUAL`，但锁存仍为 `true`；若此时放行执行器，违反 `Config.md` §15 / `PEF.md` §8.3 | 确认与解除分离；只有 `ReleaseSoftwareEstopLatch()` 返回 `true` 才算解除 |
 | E2 | 依赖 `AppCoordinator::RunGate()` 来"挡住"确认后、解除前的执行器命令 | 本层无法保证调用方一定查闸门；且把安全边界寄托在外部 | 锁定期内由本模块拒绝普通命令，闸门只是第二道防线 |
 | E3 | 确认后立刻停止零力矩帧 | 解除动作本身（换弹抬起、蓄力回零）应在锁定保护下进行，此时电机仍需零力矩 | 零力矩持续到 `ReleaseSoftwareEstopLatch()` 成功之后 |
-| E4 | 用 `IntentKind::CONTROL` 提交解除动作 | 被 `RejectReason::SOFTWARE_ESTOP` 拒绝，解除流程卡死 | 一律用 `IntentKind::SAFETY` |
+| E4 | 用 `IntentKind::CONTROL` 提交解除动作 | 被 `RejectReason::SOFTWARE_ESTOP` 拒绝，解除流程卡死 | 解除动作（换弹抬起、蓄力回零）用 `IntentKind::SAFETY_RECOVERY`；零力矩用 `IntentKind::SAFETY` |
 | E5 | 用 `SetSoftwareEstopInput(false)` 试图解除 | 该方法**不可能**解除锁存，只会写回 `true` | 只能经 `ConfirmSoftwareEstop()` + `ReleaseSoftwareEstopLatch()` |
 | E6 | 把"人工确认"实现为模式切换后就绪 | 见 E1 | 见 3.3 序列 |
 | E7 | 解除后自动恢复原自动流程 | 违反 `PEF.md` §8.3 第 6 条 | 解除后停在 `MANUAL`，由上层重新发起 |
@@ -175,7 +190,7 @@ bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;   // 已导出，�
 
 ```text
 [1] 蓄力机构电机 1、2 回零
-        → 以 IntentKind::SAFETY 提交
+        → 以 IntentKind::SAFETY_RECOVERY 提交
 [2] 判定回零完成：两个限位开关均为低电平
 [3] 仅发射机构执行三次发射动作
         每次 = x 号舵机 待机角度 → 发射角度 → 保持 100 ms → 待机角度
@@ -187,11 +202,13 @@ bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;   // 已导出，�
         **不恢复原自动发射上下文**
 ```
 
+（[1][3][5] 均为**出力**型安全动作，统一用 `IntentKind::SAFETY_RECOVERY` 提交；零力矩帧仍用 `IntentKind::SAFETY`。）
+
 ### 4.3 必须避免的错误
 
 | # | 错误写法 | 后果 | 正确做法 |
 |---|---|---|---|
-| F1 | 用 `IntentKind::CONTROL` 提交恢复动作 | `RECOVERY` 不在 `IsOperationalMode` 集合内 → `NOT_READY`，恢复卡死 | 一律 `IntentKind::SAFETY` |
+| F1 | 用 `IntentKind::CONTROL` 提交恢复动作 | `RECOVERY` 不在 `IsOperationalMode` 集合内 → `NOT_READY`，恢复卡死 | 一律 `IntentKind::SAFETY_RECOVERY`（出力型） |
 | F2 | 恢复期间让其他机构电机继续出力 | 违反 `PEF.md` §7 第 5 条 | 恢复期间持续零力矩 |
 | F3 | 恢复期间改动其他舵机角度 | 违反同上 | 保持当前角度 |
 | F4 | 回零判据用"单限位低"或"超时即算完成" | 违反 `Config.md` §8.1 | 两个限位**均为**低电平 |
@@ -201,31 +218,33 @@ bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;   // 已导出，�
 
 ---
 
-## 5. 安全动作集合（必须用 `IntentKind::SAFETY`）
+## 5. 安全动作集合（按类别提交）
 
-`Config.md` §15「安全动作例外」+ `Interface.md` §17.3 第 7 条明确列出：
+`Config.md` §15「安全动作例外」+ `Interface.md` §17.3 第 7 条列出安全动作，并按**急停阶段**区分是否允许出力：
 
-- 零力矩报文发送
-- 换弹机构抬起
-- 人工确认解除后的蓄力机构两个电机回零
-- 一般故障恢复中的回零、三次发射、换弹抬起
+| 类别 | 动作 | 允许阶段 |
+|---|---|---|
+| `IntentKind::SAFETY`（不出力） | 零力矩报文发送 | 急停锁定阶段即可 |
+| `IntentKind::SAFETY_RECOVERY`（出力） | 换弹机构抬起、人工确认解除后的蓄力机构两个电机回零 | **仅人工确认之后** |
+| `IntentKind::SAFETY_RECOVERY`（出力） | 一般故障恢复中的回零、三次发射、换弹抬起 | `RECOVERY` / `FAULT` 期间 |
 
-这些动作**不受普通命令拒绝规则影响**。在代码中应集中为一个显式的构建函数，避免逐处手写：
+这些动作**不受普通命令拒绝规则影响**。在代码中应集中为显式的构建函数，避免逐处手写：
 
 ```cpp
-// 建议（示意，最终命名以本模块实现为准）
-ControlIntent MakeSafetyIntent(IntentKind kind_or_control, std::uint32_t request_id) noexcept
+// 建议（示意，最终命名以本模块实现为准）：类别必须由调用点显式给出
+ControlIntent MakeSafetyIntent(IntentKind kind, std::uint32_t request_id) noexcept
 {
     ControlIntent intent{};
     intent.valid      = true;
-    intent.kind       = IntentKind::SAFETY;   // 关键
-    intent.source     = ControlSource::AUTO;  // SAFETY 不参与优先级排序
+    intent.kind       = kind;                 // SAFETY 或 SAFETY_RECOVERY，不允许其它
+    intent.source     = ControlSource::AUTO;  // 安全动作不参与优先级排序
     intent.request_id = request_id;
     return intent;
 }
 ```
 
-**反例**：把 `intent.kind` 留作默认值 `IntentKind::CONTROL`，是 E4/F1 类缺陷的共同根因。
+**反例**：把 `intent.kind` 留作默认值 `IntentKind::CONTROL`（E4/F1 类缺陷的共同根因），
+或在急停锁定阶段用 `SAFETY_RECOVERY` 提交换弹抬起（违反上表的阶段约束）。
 
 ---
 
@@ -311,7 +330,7 @@ ControlIntent MakeSafetyIntent(IntentKind kind_or_control, std::uint32_t request
 
 1. 软件急停为**统一 `bool` 变量**；`True` 表示锁定，解除动作完成后才置 `False`。
 2. 执行器执行普通动作前**必须**检查该变量；为 `True` 时拒绝普通命令。
-3. 安全动作（零力矩、换弹抬起、确认后的蓄力回零）不受该拒绝规则影响。
+3. 安全动作不受该拒绝规则影响，但按阶段区分：零力矩（`IntentKind::SAFETY`）在急停锁定阶段即可；换弹抬起与确认后的蓄力回零（`IntentKind::SAFETY_RECOVERY`）仅在人工确认之后。
 4. 急停响应上限 **100 ms**（`Config.md` §4）。
 5. 线程调度为 Linux `SCHED_OTHER`，固定周期任务用单调时钟**绝对期限**并监测超期；
    这是尽力调度，**不构成硬实时保证**——不要假设回调一定准时到达。
@@ -324,7 +343,7 @@ ControlIntent MakeSafetyIntent(IntentKind kind_or_control, std::uint32_t request
 - [ ] 急停确认与解除是**两个独立步骤**，解除只在 `ReleaseSoftwareEstopLatch()` 返回 `true` 后完成（E1/E6）
 - [ ] `ConfirmSoftwareEstop()` 之后、解除完成之前，不存在任何放行普通执行器命令的路径（E2）
 - [ ] 零力矩帧持续发送至解除动作完成之后，两帧（`0x200` + `0x1FF`）都发（E3/Z1/Z4）
-- [ ] 所有安全动作以 `IntentKind::SAFETY` 提交（E4/F1）
+- [ ] 安全动作按类别提交：零力矩用 `IntentKind::SAFETY`；换弹抬起、蓄力回零与一般故障恢复动作用 `IntentKind::SAFETY_RECOVERY`，且锁定阶段不放行后者（E4/F1）
 - [ ] 未使用 `SetSoftwareEstopInput(false)` 作为解除手段（E5）
 - [ ] 解除后不重新初始化、不自动恢复原自动流程（E7/E8）
 - [ ] 一般故障恢复顺序为"双电机回零 → 双限位均低 → 仅发射机构三次 → 其他电机零力矩/其他舵机不动 → 换弹抬起 → MANUAL"（F2/F3/F4/F5）
@@ -343,3 +362,4 @@ ControlIntent MakeSafetyIntent(IntentKind kind_or_control, std::uint32_t request
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | 0.1 | 2026-09-27 | 首次编制。依据 ATOM-02 修复轮后的实际接口（急停确认/解除分离、`IntentKind::SAFETY`、`IsFaultBlocking`）与 `AppCoordinator` 桥接层边界，形成软件急停、一般故障恢复、零力矩帧三大契约与 E1–E8 / F1–F7 / Z1–Z4 防错清单。目的：在编码前消除已知缺陷，而非事后补记 `BugLists.md`。 |
+| 0.2 | 2026-09-27 | 同步 ATOM02-BUG-017（方案 1）：`IntentKind` 拆分为 `SAFETY`（不出力，锁定阶段即可）与 `SAFETY_RECOVERY`（出力，仅人工确认后）。修正 §3.2 第 2 条与当前设计冲突的「锁定期换弹抬起」表述（现为锁定阶段零力矩、不抬起）；同步 §2.4 / §3.3 / §3.4-E4 / §4.2 / §4.3-F1 / §5 / §9 / §10。 |

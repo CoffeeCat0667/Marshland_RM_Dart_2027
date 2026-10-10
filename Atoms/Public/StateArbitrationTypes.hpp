@@ -109,6 +109,7 @@ enum class RejectReason : std::uint8_t {
     STOP_FIRE_SET,
     YAW_NOT_ARRIVED,
     LOWER_PRIORITY_CONFLICT,
+    NO_CONTROL_AUTHORITY,    // 无人持有控制权（显式 holder 为 NONE，ATOM02-BUG-002）
     FIRE_NOT_AUTHORIZED
 };
 
@@ -144,9 +145,13 @@ struct ControlSourceChange {
 enum class IntentKind : std::uint8_t {
     CONTROL,          // 普通机构控制意图
     FIRE,             // 发射授权请求（FireAction 之前的判定）
-    SAFETY,           // 安全动作：零力矩、换弹抬起、蓄力回零、故障恢复动作。
+    SAFETY,           // **不出力**的安全动作：零力矩报文等。
                       // Config §15「安全动作例外」+ Interface §17.3 第 7 条：
-                      // 不受普通命令拒绝规则影响（ATOM02-BUG-007）
+                      // 急停锁定阶段即可放行（锁定阶段仅允许不出力行为）。
+    SAFETY_RECOVERY,  // **出力**的安全恢复动作：换弹抬起、蓄力双电机回零、
+                      // 一般故障恢复中的回零与三次发射。
+                      // 仅在人工确认之后（SystemMode != SOFTWARE_ESTOP）放行
+                      // （ATOM02-BUG-017：Config §15、Interface §17.3/§18.1、PEF §8.2）
     STOP_FIRE_SET,    // 置停止发射标志（安全单调：只收紧，不受优先级阻断）
     STOP_FIRE_CLEAR,  // 清停止发射标志（Interface §9.2 第三条路径）
     AUTO_START,
@@ -180,8 +185,9 @@ struct FireAuthorization {
     bool fault{false};
     bool stop_fire{false};
     bool yaw_not_arrived{false};
-    // ATOM02-BUG-002 方案 B：授权函数只做前置条件复核，优先级不在其中判定，
-    // 因此本字段恒为 false（保留以兼容结果类型；优先级见 EvaluateIntent）。
+    // ATOM02-BUG-002：授权判定使用的「当前拥有控制权的来源」（由调用方显式给出）。
+    ControlSource control_holder{ControlSource::NONE};
+    // 因控制权归属被拒：无人持有控制权，或请求源优先级低于持有者。
     bool priority_conflict{false};
 };
 

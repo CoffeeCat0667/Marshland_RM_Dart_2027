@@ -8,15 +8,17 @@
 //   ATOM02-BUG-005  外部输入改为字段级写入；stop_fire 初值对齐 Config §2
 //   ATOM02-BUG-006  fault_severity 参与判定（仅 SEVERE/ESTOP 全局阻断）
 //   ATOM02-BUG-007  新增 IntentKind::SAFETY 安全动作豁免（Config §15、Interface §17.3）
+//   ATOM02-BUG-017  安全动作分相：SAFETY（不出力）/ SAFETY_RECOVERY（出力，仅人工确认后）
 //   ATOM02-BUG-008  run_id 收敛为唯一入口 BeginNewAutoFireRun
 //   ATOM02-BUG-009  STOP_FIRE_SET 补模式校验（Config §11.4）
 //   ATOM02-BUG-011  FAULT_DETECTED 通配边排除 INIT_FAILED
 //   ATOM02-BUG-012  事件覆盖改为可计数的显式丢弃
-//   ATOM02-BUG-002  授权函数剥离优先级比较（只做前置条件），
-//                   优先级统一由 SubmitIntent/EvaluateIntent 的 FIRE 分支判定（方案 B）
+//   ATOM02-BUG-002  授权函数按调用方显式给出的「控制权持有者」判定；
+//                   请求源须拥有控制权或优先级更高，priority_conflict 由此回填
 //   ATOM02-BUG-004  遗留点 4：人工确认后控制源按 Config §7.2 正常选择，
 //                   不再恒为 NONE（普通命令仍由急停锁存拒绝）
 //   ATOM02-BUG-010  IDLE（未启动）收到 auto_stop / SBUS 接管终止为显式幂等空操作
+//   ATOM02-BUG-016  导出 IsOperationalMode 供上层复用（消除安全闸门双份定义）
 // ============================================================================
 #include "StateArbitration.hpp"
 
@@ -83,16 +85,6 @@ constexpr AutoFireEdge kAutoFireEdges[] = {
     {AutoFireState::FIRE_COMPLETED, AutoFireState::AUTO_COMPLETED, ShotStage::ANY},
 };
 
-// Interface §7.2 第 1 条：未完成初始化不得进入自动发射或手动动作状态。
-// 刻意不含 RECOVERY / SOFTWARE_ESTOP：恢复期与急停期的安全动作走
-// IntentKind::SAFETY 豁免，而不是放宽本闸门（ATOM02-BUG-007）。
-bool IsOperationalMode(SystemMode mode) noexcept
-{
-    return mode == SystemMode::STANDBY || mode == SystemMode::MANUAL ||
-           mode == SystemMode::AUTO_FIRE || mode == SystemMode::DEBUG ||
-           mode == SystemMode::CALIBRATION;
-}
-
 // Config §11.4：stop_fire_set / stop_fire_clear 允许模式为「手动、调试」
 bool IsStopFireSetMode(SystemMode mode) noexcept
 {
@@ -105,6 +97,17 @@ bool StageMatches(ShotStage edge_stage, ShotStage stage) noexcept
 }
 
 } // namespace
+
+// Interface §7.2 第 1 条：未完成初始化不得进入自动发射或手动动作状态。
+// 刻意不含 RECOVERY / SOFTWARE_ESTOP：恢复期与急停期的安全动作走
+// IntentKind::SAFETY / SAFETY_RECOVERY 豁免，而不是放宽本闸门。
+// ATOM02-BUG-016：导出供上层（AppCoordinator::RunGate）复用，避免安全闸门双份定义。
+bool IsOperationalMode(SystemMode mode) noexcept
+{
+    return mode == SystemMode::STANDBY || mode == SystemMode::MANUAL ||
+           mode == SystemMode::AUTO_FIRE || mode == SystemMode::DEBUG ||
+           mode == SystemMode::CALIBRATION;
+}
 
 bool IsAutoFireStateTerminal(AutoFireState state) noexcept
 {
@@ -197,12 +200,14 @@ ControlSource SelectControlSource(const ArbitrationContext& ctx) noexcept
 // 实际发射授权：SBUS > WEB > 自动流程（Interface §3.2、§6.1、§7.2 第 3 条）
 // ---------------------------------------------------------------------------
 FireAuthorization EvaluateFireAuthorization(const ArbitrationContext& ctx,
-                                            ControlSource requesting_source) noexcept
+                                            ControlSource requesting_source,
+                                            ControlSource control_holder) noexcept
 {
     FireAuthorization auth{};
     auth.requesting_source = requesting_source;
     auth.control_source = ctx.control_source;
-    auth.authorizing_source = ctx.control_source;
+    auth.control_holder = control_holder;
+    auth.authorizing_source = control_holder;
     auth.estop = ctx.inputs.software_estop;
     auth.fault = IsFaultBlocking(ctx.inputs);
     auth.stop_fire = ctx.inputs.stop_fire;
@@ -232,14 +237,32 @@ FireAuthorization EvaluateFireAuthorization(const ArbitrationContext& ctx,
         auth.reason = RejectReason::YAW_NOT_ARRIVED;
         return auth;
     }
-    // ATOM02-BUG-002（方案 B）：本函数只做前置条件复核（急停 / 故障 / 停止发射 /
-    // YAW 到位）。「实际发射授权优先级 SBUS > WEB > 自动流程」不在本函数判定，
-    // 统一由意图路径承担：SubmitIntent -> EvaluateIntent 的 FIRE 分支先做优先级
-    // 仲裁，再调用本函数。故 priority_conflict 恒为 false（字段保留以兼容类型）。
+    // ATOM02-BUG-002：控制权归属由 control_holder 显式给出，不再由 rank 猜测。
+    // 无人持有控制权 → 任何来源都不得发射。
+    if (control_holder == ControlSource::NONE) {
+        auth.priority_conflict = true;
+        auth.reason = RejectReason::NO_CONTROL_AUTHORITY;
+        return auth;
+    }
+    // 低优先级请求源不得越过控制权持有者。自动流程（AUTO）在 WEB/SBUS 持有控制权
+    // 时被拒，符合 PEF §6 第 5 条「没有对应控制权时，自动流程不得自行越权发射」。
+    if (ControlSourceRank(requesting_source) < ControlSourceRank(control_holder)) {
+        auth.priority_conflict = true;
+        auth.reason = RejectReason::LOWER_PRIORITY_CONFLICT;
+        return auth;
+    }
+
     auth.allowed = true;
     auth.authorizing_source = requesting_source;
     auth.reason = RejectReason::NONE;
     return auth;
+}
+
+// 便捷重载：以本模块的控制源选择结果（Config §7.2）作为控制权持有者
+FireAuthorization EvaluateFireAuthorization(const ArbitrationContext& ctx,
+                                            ControlSource requesting_source) noexcept
+{
+    return EvaluateFireAuthorization(ctx, requesting_source, ctx.control_source);
 }
 
 // ---------------------------------------------------------------------------
@@ -257,10 +280,22 @@ IntentDecision EvaluateIntent(const ArbitrationContext& ctx, const ControlIntent
         return decision;
     }
 
-    // Config §15「安全动作例外」+ Interface §17.3 第 7 条（ATOM02-BUG-007）：
-    // 零力矩、换弹抬起、急停人工确认后的蓄力机构回零、一般故障恢复动作
-    // 不受普通命令拒绝规则影响，故在急停/故障/模式闸门之前直接放行。
+    // Config §15「安全动作例外」+ Interface §17.3 第 7 条（ATOM02-BUG-007/017）：
+    // 安全动作在故障/模式闸门之前判定，但按急停**阶段**区分是否允许出力：
+    //   * SAFETY          不出力（零力矩报文等）：锁定阶段也允许；
+    //   * SAFETY_RECOVERY 出力（换弹抬起、蓄力回零、故障恢复动作）：仅在人工确认
+    //                     之后放行。锁定阶段（模式仍为 SOFTWARE_ESTOP）放行出力动作
+    //                     违反 Interface §17.3 第 7 条、§18.1、Config §15 与
+    //                     PEF §8.2 第 2 条（锁定阶段换弹不抬起）。
     if (intent.kind == IntentKind::SAFETY) {
+        decision.accepted = true;
+        return decision;
+    }
+    if (intent.kind == IntentKind::SAFETY_RECOVERY) {
+        if (ctx.system_mode == SystemMode::SOFTWARE_ESTOP) {
+            decision.reason = RejectReason::SOFTWARE_ESTOP;
+            return decision;
+        }
         decision.accepted = true;
         return decision;
     }
@@ -321,14 +356,11 @@ IntentDecision EvaluateIntent(const ArbitrationContext& ctx, const ControlIntent
         return decision;
     }
 
-    // 发射意图：先按 SBUS > WEB > 自动流程 仲裁优先级（原子操作 8），
-    // 再走发射前复核（ATOM02-BUG-002 方案 B：优先级只在意图路径判定）
+    // 发射意图：控制权归属由授权函数按显式 holder 判定并回填 priority_conflict
+    // （ATOM02-BUG-002；原子操作 8 由此覆盖）
     if (intent.kind == IntentKind::FIRE) {
-        if (ControlSourceRank(intent.source) < ControlSourceRank(ctx.control_source)) {
-            decision.reason = RejectReason::LOWER_PRIORITY_CONFLICT;
-            return decision;
-        }
-        const FireAuthorization auth = EvaluateFireAuthorization(ctx, intent.source);
+        const FireAuthorization auth =
+            EvaluateFireAuthorization(ctx, intent.source, ctx.control_source);
         decision.accepted = auth.allowed;
         decision.reason = auth.reason;
         return decision;
@@ -397,6 +429,7 @@ const char* ToString(RejectReason reason) noexcept
     case RejectReason::STOP_FIRE_SET:           return "STOP_FIRE_SET";
     case RejectReason::YAW_NOT_ARRIVED:         return "YAW_NOT_ARRIVED";
     case RejectReason::LOWER_PRIORITY_CONFLICT: return "LOWER_PRIORITY_CONFLICT";
+    case RejectReason::NO_CONTROL_AUTHORITY:    return "NO_CONTROL_AUTHORITY";
     case RejectReason::FIRE_NOT_AUTHORIZED:     return "FIRE_NOT_AUTHORIZED";
     }
     return "UNKNOWN";
@@ -408,6 +441,7 @@ const char* ToString(IntentKind kind) noexcept
     case IntentKind::CONTROL:         return "CONTROL";
     case IntentKind::FIRE:            return "FIRE";
     case IntentKind::SAFETY:          return "SAFETY";
+    case IntentKind::SAFETY_RECOVERY: return "SAFETY_RECOVERY";
     case IntentKind::STOP_FIRE_SET:   return "STOP_FIRE_SET";
     case IntentKind::STOP_FIRE_CLEAR: return "STOP_FIRE_CLEAR";
     case IntentKind::AUTO_START:      return "AUTO_START";
@@ -717,6 +751,13 @@ bool StateArbitrator::ReleaseSoftwareEstopLatch() noexcept
 
 AutoFireTransitionResult StateArbitrator::RequestAutoFireState(AutoFireState target) noexcept
 {
+    // 便捷重载：以本模块的控制源选择结果（Config §7.2）作为控制权持有者
+    return RequestAutoFireState(target, ctx_.control_source);
+}
+
+AutoFireTransitionResult StateArbitrator::RequestAutoFireState(
+    AutoFireState target, ControlSource control_holder) noexcept
+{
     AutoFireTransitionResult result{};
     result.from = ctx_.auto_fire_state;
     result.to = target;
@@ -764,7 +805,8 @@ AutoFireTransitionResult StateArbitrator::RequestAutoFireState(AutoFireState tar
         }
     } else if (target == AutoFireState::FIRING) {
         // 发射前待命 -> 发射中：停止标志为 False 且授权通过（Interface §7.1、§7.2）
-        const FireAuthorization auth = EvaluateFireAuthorization(ctx_, ControlSource::AUTO);
+        const FireAuthorization auth =
+            EvaluateFireAuthorization(ctx_, ControlSource::AUTO, control_holder);
         if (!auth.allowed) {
             result.reason = (auth.reason == RejectReason::NONE) ? RejectReason::FIRE_NOT_AUTHORIZED
                                                                 : auth.reason;
@@ -907,7 +949,15 @@ IntentDecision StateArbitrator::SubmitIntent(const ControlIntent& intent) noexce
 
 FireAuthorization StateArbitrator::AuthorizeFire(ControlSource requesting_source) noexcept
 {
-    const FireAuthorization auth = EvaluateFireAuthorization(ctx_, requesting_source);
+    // 便捷重载：以本模块的控制源选择结果作为控制权持有者
+    return AuthorizeFire(requesting_source, ctx_.control_source);
+}
+
+FireAuthorization StateArbitrator::AuthorizeFire(ControlSource requesting_source,
+                                                 ControlSource control_holder) noexcept
+{
+    const FireAuthorization auth =
+        EvaluateFireAuthorization(ctx_, requesting_source, control_holder);
 
     StateEvent event{};
     event.kind = EventKind::FIRE_DECISION;
@@ -920,7 +970,15 @@ FireAuthorization StateArbitrator::AuthorizeFire(ControlSource requesting_source
 
 FireAuthorization StateArbitrator::AuthorizeManualFire(ControlSource requesting_source) noexcept
 {
-    FireAuthorization auth = EvaluateFireAuthorization(ctx_, requesting_source);
+    // 便捷重载：以本模块的控制源选择结果作为控制权持有者
+    return AuthorizeManualFire(requesting_source, ctx_.control_source);
+}
+
+FireAuthorization StateArbitrator::AuthorizeManualFire(ControlSource requesting_source,
+                                                       ControlSource control_holder) noexcept
+{
+    FireAuthorization auth =
+        EvaluateFireAuthorization(ctx_, requesting_source, control_holder);
 
     // Config §11.4 fire_once：允许模式为「手动、调试」，请求源为 SBUS 或 WEB
     if (auth.allowed && ctx_.system_mode != SystemMode::MANUAL &&

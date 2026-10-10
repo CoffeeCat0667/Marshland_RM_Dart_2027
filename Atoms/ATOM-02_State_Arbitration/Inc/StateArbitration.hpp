@@ -18,7 +18,8 @@
 //
 // 无副作用约定：
 //   SelectControlSource / IsModeTransitionAllowed / IsAutoFireTransitionAllowed /
-//   IsFaultBlocking / EvaluateFireAuthorization / EvaluateIntent 为纯函数。
+//   IsAutoFireStateTerminal / IsFaultBlocking / IsOperationalMode /
+//   EvaluateFireAuthorization / EvaluateIntent 为纯函数。
 //   状态提交集中在 StateArbitrator 的显式提交接口，调用方不得把“拒绝”当“成功”。
 //
 // 类型位置：外部输入 / 意图 / 结果 / 事件类型已上提至
@@ -62,9 +63,24 @@ bool IsAutoFireStateTerminal(AutoFireState state) noexcept;
 // F-VISION-001）不全局阻断（ATOM02-BUG-006）。
 bool IsFaultBlocking(const ExternalInputs& inputs) noexcept;
 
-// 每次实际发射前的复核：只有前置条件——急停 / 故障 / 停止发射 / YAW 到位
-// （Interface §7.2 第 3 条）。**不判定优先级**（ATOM02-BUG-002 方案 B）：控制源
-// 优先级一律由 EvaluateIntent/SubmitIntent 的 FIRE 分支先仲裁。
+// Interface §7.2 第 1 条：业务模式是否可操作（STANDBY / MANUAL / AUTO_FIRE / DEBUG /
+// CALIBRATION）。刻意不含 RECOVERY / SOFTWARE_ESTOP——恢复期与急停期的安全动作走
+// IntentKind::SAFETY / SAFETY_RECOVERY 豁免（后者仅人工确认后），而不是放宽本闸门。
+// ATOM02-BUG-016：导出供上层（AppCoordinator::RunGate）复用，避免安全闸门双份定义。
+bool IsOperationalMode(SystemMode mode) noexcept;
+
+// 每次实际发射前的复核（Interface §7.2 第 3 条、PEF §6 第 5 条）：
+//   1. 前置条件：急停 / 故障 / 停止发射 / YAW 到位；
+//   2. 控制权：control_holder 是调用方**显式**给出的「当前拥有控制权的来源」。
+//      无人持有（NONE）→ NO_CONTROL_AUTHORITY；请求源优先级低于持有者 →
+//      LOWER_PRIORITY_CONFLICT（自动流程在 WEB/SBUS 持有控制权时不得越权发射）；
+//      同源或更高优先级（SBUS/WEB 介入自动流程）→ 通过。
+//   结果回填 priority_conflict（ATOM02-BUG-002）。
+FireAuthorization EvaluateFireAuthorization(const ArbitrationContext& ctx,
+                                            ControlSource requesting_source,
+                                            ControlSource control_holder) noexcept;
+
+// 便捷重载：以本模块的控制源选择结果（Config §7.2）作为控制权持有者。
 FireAuthorization EvaluateFireAuthorization(const ArbitrationContext& ctx,
                                             ControlSource requesting_source) noexcept;
 
@@ -152,6 +168,10 @@ public:
     // AUTO_PREPARE 目标一律转交 BeginNewAutoFireRun（唯一流程入口，ATOM02-BUG-008）。
     // IDLE 表示"未启动"，等价于已停止：此时 AUTO_TERMINATED 为幂等空操作，
     // 返回 AUTO_FLOW_NOT_STARTED 且不改变状态（ATOM02-BUG-010）。
+    // FIRE_READY -> FIRING 的控制权持有者由调用方显式给出（ATOM02-BUG-002）。
+    AutoFireTransitionResult RequestAutoFireState(AutoFireState target,
+                                                  ControlSource control_holder) noexcept;
+    // 便捷重载：以本模块的控制源选择结果作为控制权持有者。
     AutoFireTransitionResult RequestAutoFireState(AutoFireState target) noexcept;
 
     // SBUS 接管：允许当前硬件动作组完成后终止（动作组由调用方负责完成），并切回 MANUAL。
@@ -168,12 +188,17 @@ public:
     IntentDecision SubmitIntent(const ControlIntent& intent) noexcept;
 
     // 自动流程内的发射授权判定（FIRE_READY -> FIRING 之前调用）。
-    // 只给出前置条件结论；SBUS/WEB 的介入优先级必须先经 SubmitIntent 仲裁。
+    // control_holder = 调用方显式给出的「当前拥有控制权的来源」（ATOM02-BUG-002）。
+    FireAuthorization AuthorizeFire(ControlSource requesting_source,
+                                    ControlSource control_holder) noexcept;
+    // 便捷重载：以本模块的控制源选择结果作为控制权持有者。
     FireAuthorization AuthorizeFire(ControlSource requesting_source) noexcept;
 
     // 手动/调试模式下的单次发射授权（Config §11.4 fire_once，允许模式：手动、调试）。
     // 与自动流程状态机解耦：不读写 auto_fire_state，只给出授权结论。
-    // 同样只做前置条件复核；请求源优先级由 SubmitIntent 仲裁后再调用。
+    FireAuthorization AuthorizeManualFire(ControlSource requesting_source,
+                                          ControlSource control_holder) noexcept;
+    // 便捷重载：以本模块的控制源选择结果作为控制权持有者。
     FireAuthorization AuthorizeManualFire(ControlSource requesting_source) noexcept;
 
     // ---- 事件 -------------------------------------------------------------

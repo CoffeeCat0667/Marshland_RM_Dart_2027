@@ -58,7 +58,7 @@
 
 已完成第一阶段和第二阶段的基础实现：`RuntimeCoordinator`、生命周期模块接口、逐步启动结果、安全门控、失败回滚和关闭释放逻辑已落地。具体硬件/服务适配器仍通过 `ILifecycleModule` 接入。
 
-已修复的既有缺陷（详见 `BugLists.md` §5.6、§5.7）：`ATOM01-BUG-002`（移除会锁死手动/调试/校准的本地状态判据）、`ATOM01-BUG-003`（`Stopped` 允许重启）、`ATOM01-BUG-004`（`start()` 全流程异常保护并声明为 `noexcept`）、`ATOM01-BUG-005`（`ModuleRegistration` 补默认值）、`ATOM01-BUG-007`（共享契约定入 `Atoms/Public/ILifecycle.hpp`）、`ATOM01-BUG-009`（改为 1 步骤 : N 模块，并提供 `lastRegistrationError()`）。
+已修复的既有缺陷（详见 `BugLists.md` §3 已修复项索引）：`ATOM01-BUG-002`（移除会锁死手动/调试/校准的本地状态判据）、`ATOM01-BUG-003`（按 2026-09-27 裁决收紧：移除 `Stopped -> Created` 运行中重启）、`ATOM01-BUG-004`（`start()` 全流程异常保护并声明为 `noexcept`）、`ATOM01-BUG-005`（`ModuleRegistration` 补默认值）、`ATOM01-BUG-007`（共享契约定入 `Atoms/Public/ILifecycle.hpp`）、`ATOM01-BUG-009`（改为 1 步骤 : N 模块，并提供 `lastRegistrationError()`）。
 
 `ATOM01-BUG-008` 的事件公共契约已定义于 `Design/LifecycleEvents.md`（代码侧实施待授权）；`ATOM01-BUG-001` 按现有分层设计不修复，`ATOM01-BUG-006` 因越权/跨 Atom 不实施。
 

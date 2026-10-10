@@ -73,8 +73,9 @@ public:
     // 分配失败）并统一回滚为 InitFailed，因此声明为 noexcept；调用方（例如
     // AppCoordinator::Start 本身是 noexcept）不会因异常外泄而 std::terminate。
     //
-    // ATOM01-BUG-003：完成一次 shutdown() 之后（Stopped）允许重启，回到
-    // Created 并清空上一轮结果快照；InitFailed 不能直接重启，必须先 shutdown()。
+    // ATOM01-BUG-003（2026-09-27 裁决收紧）：**不支持运行中重启**。只有 Created
+    //（从未启动）会执行启动序列；Stopped / InitFailed / Standby 等状态一律返回
+    // 既有快照，不重新初始化。运行中需要重新初始化只能重启进程。
     RuntimeStartResult start() noexcept;
 
     void shutdown() noexcept;

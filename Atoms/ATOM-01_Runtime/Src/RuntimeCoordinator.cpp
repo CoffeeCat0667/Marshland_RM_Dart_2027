@@ -100,20 +100,17 @@ RuntimeStartResult RuntimeCoordinator::start() noexcept
     bool sequence_started = false;
 
     try {
-        if (state_ == RuntimeState::Stopped) {
-            // ATOM01-BUG-003 修复（允许重启）：一次干净的 shutdown() 之后允许重新
-            // 进入启动序列。回到 Created 并清空上一轮结果快照；各模块的 started
-            // 标志已由 shutdown() 复位，此处再兜底一次。
-            //
-            // InitFailed 不在此列：Interface.md §7.1 没有 INIT_FAILED -> INITIALIZING
-            // 这条边，因此"重启前必须先有一次显式 shutdown()"是安全前提。
-            state_ = RuntimeState::Created;
-            step_results_.clear();
-            for (auto& registered : modules_) {
-                registered.started = false;
-            }
-        }
-
+        // ATOM01-BUG-003（2026-09-27 裁决收紧）：**不支持运行中重启**。
+        //
+        // 原先允许 Stopped -> Created 重启，与产品裁决（见 ATOM-02 的
+        // ATOM02-BUG-015）冲突：SystemMode 一旦离开 UNINITIALIZED 就不可回到可
+        // 初始化状态（Interface.md §7.1 无回到"初始化中"的边），PEF.md §8.3 第 3 条
+        // 亦要求急停人工解除后"不需要重新初始化"。若保留该能力，会出现"硬件已重新
+        // 初始化、业务侧并未重新初始化"的半初始化状态。
+        //
+        // 因此只有 Created（从未启动）会执行启动序列；Stopped / InitFailed /
+        // Standby 等状态一律返回既有快照，不重新初始化。运行中需要重新初始化
+        // 只能重启进程。
         if (state_ != RuntimeState::Created) {
             return RuntimeStartResult{state_, step_results_};
         }

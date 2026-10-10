@@ -9,7 +9,7 @@
 | 程序代号 | Marshland |
 | 状态 | 启用 |
 | 来源 | PRD 6、7.4、14；PEF 3、8；Interface 9.1；Config 2、7 |
-| 同步基线 | PRD 0.9、PEF 1.4、Interface 1.4、Config 0.7；2026-09-26 |
+| 同步基线 | PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8；2026-10-10 |
 | 硬件 | 天地飞 ET16S 接收机；串口、电平与通道配置读取 Config |
 
 ## 单一职责
