@@ -1,0 +1,848 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshland.local/schema/dart_control.schema.json",
+  "title": "Marshland dart_control.json",
+  "description": "RoboMaster 2027 飞镖系统镖架控制主程序运行时配置。数值与语义以 Design/Config.md 为唯一来源；键名、类型、单位与结构以 Rule/ConfigSchema.md 与本源文件为唯一来源。标记 [待定] 的项必须写为 null，禁止臆造。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "baseline",
+    "mode",
+    "timing",
+    "motor",
+    "can",
+    "sbus",
+    "persistence"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "配置 schema 版本。本文件定义的版本为 1。"
+    },
+
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "产品与运行基线（Design/Config.md §2）",
+      "required": ["auto_total_shots", "initial_control_source", "stop_fire_default", "time_base"],
+      "properties": {
+        "auto_total_shots": { "type": "integer", "const": 4, "description": "自动流程总发数，固定 4" },
+        "continuous_extra_interval_ms": { "type": "integer", "minimum": 0, "description": "连续发射额外固定间隔，0" },
+        "repeat_charge_per_shot": { "type": "boolean" },
+        "repeat_force_per_shot": { "type": "boolean" },
+        "fire_priority_order": {
+          "type": "array",
+          "items": { "enum": ["SBUS", "WEB", "AUTO"] },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "实际发射控制优先级，严格 SBUS > WEB > AUTO"
+        },
+        "estop_overrides_all_sources": { "type": "boolean", "const": true },
+        "estop_trigger_sources": { "type": "array", "items": { "enum": ["WEB", "SBUS"] } },
+        "hardware_estop_added": { "type": "boolean", "const": false },
+        "estop_confirm_requires_reinit": { "type": "boolean", "const": false },
+        "stop_fire_default": { "type": "boolean", "const": true, "description": "停止发射标志初值为 True" },
+        "stop_fire_setter": { "enum": ["WEB"] },
+        "stop_fire_clear_paths": {
+          "type": "array",
+          "items": { "enum": ["VISION", "MAIN_ON_TIMEOUT", "WEB"] },
+          "description": "视觉正常到位 / 30s 超时兜底 / WEB 第三路径"
+        },
+        "stop_fire_scan_state": { "enum": ["FIRE_READY"] },
+        "initial_control_source": { "$ref": "#/$defs/controlSource" },
+        "yaw_arrived_type": { "enum": ["bool"] },
+        "yaw_arrived_initial": { "type": "boolean", "const": false },
+        "yaw_arrived_clearer": { "enum": ["MAIN_CONTROLLER"] },
+        "yaw_arrived_clear_moment": { "enum": ["AFTER_FIRE_ACTION"] },
+        "pressure_sensor_enabled": { "type": "boolean", "const": false, "description": "压力传感器本版本不启用" },
+        "time_base": { "enum": ["MONOTONIC"], "description": "Interface §3.3 强制单调时钟" }
+      }
+    },
+
+    "mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "运行模式与初始状态（Design/Config.md §3）",
+      "properties": {
+        "enabled": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "initialization": { "type": "boolean" },
+            "standby": { "type": "boolean" },
+            "auto_fire": { "type": "boolean" },
+            "manual": { "type": "boolean" },
+            "debug": { "type": "boolean" },
+            "calibration": { "type": "boolean" },
+            "auto_recovery": { "type": "boolean" },
+            "init_failed": { "type": "boolean" },
+            "fault": { "type": "boolean" },
+            "software_estop": { "type": "boolean" }
+          }
+        },
+        "initial": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "system_mode": { "$ref": "#/$defs/systemMode" },
+            "control_source": { "$ref": "#/$defs/controlSource" },
+            "current_shot": { "type": "integer", "minimum": 0, "maximum": 4 },
+            "total_shots": { "type": "integer", "const": 4 },
+            "recovery_fire_count": { "type": "integer", "const": 3 },
+            "recovery_final_mode": { "$ref": "#/$defs/systemMode" },
+            "auto_fire_state": { "$ref": "#/$defs/autoFireState" },
+            "estop_active": { "type": "boolean", "const": false },
+            "fault_active": { "type": "boolean", "const": false },
+            "stop_fire": { "type": "boolean", "const": true },
+            "yaw_arrived": { "type": "boolean", "const": false }
+          }
+        }
+      }
+    },
+
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "运行时序与动作参数（Design/Config.md §4）。所有周期/超时键名必须带 _ms 或 _s 后缀。",
+      "properties": {
+        "max_control_cycle_ms": { "type": "integer", "minimum": 1, "description": "系统最长控制周期，硬性上限 100" },
+        "motor_loop_period_ms": { "type": "integer", "minimum": 1 },
+        "pid_period_ms": { "type": "integer", "minimum": 1 },
+        "can_io_period_ms": { "type": "integer", "minimum": 1 },
+        "gpio_sample_period_ms": { "type": "integer", "minimum": 1 },
+        "sbus_receive_period_ms": { "type": "integer", "minimum": 1 },
+        "websocket_push_period_ms": { "type": "integer", "minimum": 1 },
+        "estop_response_max_ms": { "type": "integer", "minimum": 1 },
+        "zero_torque_send_period_ms": { "type": "integer", "minimum": 1 },
+        "reload_lift_settle_ms": { "type": "integer", "minimum": 0 },
+        "reload_lower_settle_ms": { "type": "integer", "minimum": 0 },
+        "feed_angle2_hold_ms": { "type": "integer", "minimum": 0 },
+        "feed_to_reload_lower_delay_s": { "type": "integer", "minimum": 0 },
+        "fire_angle_hold_ms": { "type": "integer", "minimum": 0 },
+        "sbus_loss_timeout_ms": { "type": "integer", "minimum": 1 },
+        "charge_time_s": { "type": "integer", "minimum": 0, "description": "蓄力时间 X" },
+        "charge_max_action_ms": { "type": "integer", "minimum": 0 },
+        "force_time_s": { "type": "integer", "minimum": 0, "description": "变力时间 X" },
+        "reload_max_action_ms": { "type": "integer", "minimum": 0 },
+        "feed_max_action_ms": { "type": "integer", "minimum": 0 },
+        "force_max_action_ms": { "type": "integer", "minimum": 0 },
+        "yaw_adjust_max_action_ms": { "type": "integer", "minimum": 0, "description": "2s 仅为时间节点，不终止 30s 视觉等待" },
+        "fire_max_action_ms": { "type": "integer", "minimum": 0 },
+        "can_comm_timeout_ms": { "type": "integer", "minimum": 1 },
+        "iic_comm_timeout_ms": { "type": "integer", "minimum": 1 },
+        "http_request_timeout_ms": { "type": "integer", "minimum": 1 },
+        "websocket_io_timeout_ms": { "type": "integer", "minimum": 1 },
+        "vision_status_update_timeout_ms": { "type": "integer", "minimum": 1 },
+        "vision_no_response_timeout_ms": { "type": "integer", "minimum": 1, "description": "30s 视觉无响应超时" },
+        "max_position_error_px": { "type": "integer", "minimum": 0 },
+        "max_current_ma": { "type": "integer", "minimum": 0, "description": "对称限幅，正数表示 ±该值" }
+      }
+    },
+
+    "motor": {
+      "type": "array",
+      "description": "电机、编码器与 PID 映射（Design/Config.md §5.1–5.4）",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "role", "bus", "node", "target_unit"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "role": { "enum": ["charge", "yaw", "force"] },
+          "bus": { "type": "string", "minLength": 1 },
+          "node": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{3}$", "description": "CAN 节点 ID，形如 0x201" },
+          "control_mode": { "enum": ["CLOSED_LOOP_PID"] },
+          "encoder_source": { "enum": ["CAN"] },
+          "target_unit": { "enum": ["rpm"] },
+          "pid": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kp", "ki", "kd", "integral_limit", "output_limit", "control_period_ms", "enabled"],
+            "properties": {
+              "kp": { "type": "integer" },
+              "ki": { "type": "integer" },
+              "kd": { "type": "integer" },
+              "integral_limit": { "type": "integer", "minimum": 0 },
+              "output_limit": { "type": "integer", "minimum": 0 },
+              "control_period_ms": { "type": "integer", "minimum": 1 },
+              "enabled": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+
+    "motor_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "电机控制全局配置（Design/Config.md §5.2）",
+      "properties": {
+        "supported_modes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/controlMode" },
+          "minItems": 1
+        },
+        "start_stop_strategy": { "enum": ["PID"] },
+        "output_limit": { "type": "integer", "minimum": 0 },
+        "current_limit_ma": { "type": "integer", "minimum": 0 },
+        "target_slew_limit": { "type": "integer", "minimum": 0 },
+        "offline_timeout_ms": { "type": "integer", "minimum": 1 },
+        "feedback_timeout_ms": { "type": "integer", "minimum": 1 },
+        "temperature_limit_c": { "type": "integer" },
+        "error_code_map": { "type": "object", "description": "按 Docs C620 资料映射，键值对由设备资料给出" }
+      }
+    },
+
+    "motor_encoder": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "编码器配置（Design/Config.md §5.4）",
+      "properties": {
+        "interface": { "enum": ["CAN"] },
+        "output_quantity": { "enum": ["rpm"] },
+        "direction_sign": { "enum": ["SIGNED"], "description": "正负号区分正反转" },
+        "feedback_period_ms": { "type": "integer", "minimum": 1 },
+        "feedback_timeout_ms": { "type": "integer", "minimum": 1 },
+        "abnormal_abs_limit_rpm": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 7500,
+          "description": "转速绝对值超过该值判为编码器异常。唯一权威值见 Design/Config.md §5.4"
+        }
+      }
+    },
+
+    "force": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "变力机构（Design/Config.md §5.5）",
+      "properties": {
+        "control_mode": { "enum": ["CLOSED_LOOP_PID"] },
+        "target_default_source": { "type": ["string", "null"] },
+        "target_unit": { "enum": ["rpm"] },
+        "target_range": { "type": "integer", "minimum": 0, "description": "对称范围，正数表示 ±该值" },
+        "completion_criterion": { "enum": ["TIMED"] },
+        "calibration_method": { "enum": ["MANUAL"] },
+        "has_dedicated_fault_handling": { "type": "boolean", "const": false }
+      }
+    },
+
+    "servo_mechanisms": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "换弹/供弹/发射机构舵机参数（Design/Config.md §5.6、§9.2）",
+      "properties": {
+        "reload": {
+          "type": "array",
+          "description": "换弹机构，四个舵机",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["servo_id"],
+            "properties": {
+              "servo_id": { "type": "integer", "minimum": 1, "maximum": 4 },
+              "standby_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+              "lift_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+              "lower_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+              "settle_ms": { "type": "integer", "minimum": 0, "description": "动作组角度命令发送后计时" }
+            }
+          }
+        },
+        "feed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "servo_id": { "type": "integer", "minimum": 1 },
+            "angle1_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+            "angle2_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+            "hold_ms": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "fire": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "servo_id": { "type": ["integer", "null"], "description": "[待定] 时为 null" },
+            "standby_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+            "fire_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+            "hold_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+
+    "can": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "SocketCAN 与报文（Design/Config.md §6）",
+      "required": ["interface", "bitrate"],
+      "properties": {
+        "interface": { "type": "string", "minLength": 1 },
+        "bitrate": { "type": "string", "pattern": "^[0-9]+(k|M)?bps$" },
+        "data_bits": { "type": "integer", "enum": [8] },
+        "sample_point_percent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "sjw": { "type": "integer", "minimum": 1 },
+        "start_mode": { "enum": ["CLASSIC_CAN_FD_OFF"] },
+        "rx_filter": { "enum": ["NONE"] },
+        "error_frame_handling": { "enum": ["DISCARD"] },
+        "rx_task": { "enum": ["DEDICATED_THREAD"] },
+        "tx_task": { "enum": ["DEDICATED_THREAD"] },
+        "task_priority_order": { "type": "array", "items": { "enum": ["SAFETY", "MANUAL", "AUTO"] } },
+        "task_sched_policy": { "enum": ["SCHED_OTHER"] },
+        "protocol_source": { "type": "string" },
+        "frames": {
+          "type": "array",
+          "description": "CAN 报文接口表（Design/Config.md §6.2）",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "direction", "can_id", "dlc"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+              "direction": { "enum": ["TX", "RX"] },
+              "can_id": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{3}$" },
+              "can_id_range": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{3}$" },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "dlc": { "type": "integer", "enum": [8] },
+              "byte_order": { "enum": ["BIG_ENDIAN"], "description": "本工程全部多字节量统一大端序" },
+              "unit": { "enum": ["mA", "rpm", "deg", "c", "raw"] },
+              "period_ms": { "type": "integer", "minimum": 0 },
+              "trigger": { "enum": ["PERIODIC", "ON_DEVICE_REPORT"] },
+              "timeout_ms": { "type": "integer", "minimum": 0 },
+              "on_failure": { "type": "string" },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "type"],
+                  "properties": {
+                    "name": { "enum": ["rotor_angle", "rotor_speed", "torque_current", "temperature", "error_code"] },
+                    "type": { "enum": ["int16", "raw"] },
+                    "slot": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zero_torque": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "零力矩与安全发送（Design/Config.md §6.3）",
+          "properties": {
+            "send_mode": { "enum": ["OPEN_LOOP"] },
+            "period_ms": { "type": "integer", "minimum": 1 },
+            "frames": { "type": "array", "items": { "type": "string" } },
+            "motor_on_comm_fault": { "enum": ["ZERO_TORQUE"] },
+            "servo_on_comm_fault": { "enum": ["HOLD"] },
+            "fire_servo_on_comm_fault": { "enum": ["REJECT_CHANGE"] },
+            "payload_hex": { "type": "string", "const": "0000000000000000" }
+          }
+        },
+        "silence_trigger": { "enum": ["ZERO_TORQUE_SEND_FAILED"] }
+      }
+    },
+
+    "sbus": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "SBUS 遥控输入（Design/Config.md §7）",
+      "required": ["serial_device", "channel_scale_x"],
+      "properties": {
+        "receiver": { "enum": ["ET16S"] },
+        "protocol": { "enum": ["SBUS"] },
+        "serial_device": { "type": "string", "minLength": 1 },
+        "channel_count": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "channel_scale_x": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "baudrate": { "type": "integer", "minimum": 1 },
+        "serial_format": { "type": "string", "pattern": "^[0-9][A-Z][0-9]$" },
+        "inverted": { "type": "boolean" },
+        "receive_period_ms": { "type": "integer", "minimum": 1 },
+        "loss_timeout_ms": { "type": "integer", "minimum": 1 },
+        "frame_bytes": { "type": "integer", "minimum": 1 },
+        "validate_frame_tail": { "type": "boolean" },
+        "joystick_center": { "type": "integer" },
+        "joystick_range": { "type": "integer", "minimum": 0 },
+        "switch_values": { "type": "array", "items": { "type": "integer" } },
+        "valid_min": { "type": "integer" },
+        "valid_max": { "type": "integer" },
+        "loss_handling": { "enum": ["DEGRADE_TO_WEB"] },
+        "priority": { "enum": ["SBUS_GT_WEB_GT_AUTO"] },
+        "functions": {
+          "type": "array",
+          "description": "功能映射（Design/Config.md §7.1）。标记 [待定] 的 channel 必须为 null。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "signal_type"],
+            "properties": {
+              "name": {
+                "enum": [
+                  "manual_mode_toggle", "auto_mode", "estop_trigger", "estop_confirm",
+                  "stop_fire", "auto_start", "manual_charge", "manual_reload",
+                  "manual_feed", "manual_force", "manual_yaw", "manual_fire"
+                ]
+              },
+              "channel": {
+                "type": ["string", "null"],
+                "pattern": "^CH([1-9]|1[0-6])$",
+                "description": "[待定] 通道必须为 null，消费方禁止推断"
+              },
+              "signal_type": { "enum": ["SWITCH", "JOYSTICK"] },
+              "valid_range": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+              "neutral": { "type": "integer" },
+              "loss_behavior": { "enum": ["DEGRADE_TO_WEB"] }
+            }
+          }
+        },
+        "rules": {
+          "$ref": "#/$defs/controlSourceRules",
+          "description": "控制源选择规则（Design/Config.md §7.2）。规则表入 JSON，由 ATOM-02 的 SelectControlSource 按顺序求值。"
+        }
+      }
+    },
+
+    "gpio": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "GPIO 与传感器（Design/Config.md §8）",
+      "properties": {
+        "limit_switch": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "motor_id"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 1 },
+              "pin": { "type": ["integer", "null"], "description": "[待定] GPIO 编号为 null" },
+              "motor_id": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "sample_period_ms": { "type": "integer", "minimum": 1 },
+        "default_level": { "enum": ["HIGH", "LOW"] },
+        "active_level": { "enum": ["HIGH", "LOW"] },
+        "charge_home_criterion": { "enum": ["BOTH_LIMITS_LOW"] },
+        "debounce_ms": { "type": "integer", "minimum": 0 },
+        "report_on_change": { "type": "boolean" },
+        "report_max_delay_ms": { "type": "integer", "minimum": 0 },
+        "read_failure_handling": { "enum": ["ENTER_FAULT"] },
+        "limit_trigger_action": { "enum": ["STOP_RELATED_MOTOR"] }
+      }
+    },
+
+    "servo": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "PCA9685A、IIC 与舵机资源（Design/Config.md §9）",
+      "properties": {
+        "pca9685": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "i2c_device": { "type": "string", "pattern": "^/dev/i2c-[0-9]+$" },
+            "address": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{2}$" },
+            "channel_count": { "type": "integer", "enum": [16] },
+            "pwm_resolution_bits": { "type": "integer", "enum": [12] },
+            "pwm_frequency_hz": { "type": "integer", "minimum": 1 },
+            "channel_range": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+            "oe_active_level": { "enum": ["LOW", "HIGH"] },
+            "access_mode": { "enum": ["SERIALIZED"] },
+            "task_priority": { "enum": ["MEDIUM_HIGH"] },
+            "error_handling": { "enum": ["ENTER_FAULT"] }
+          }
+        },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "type": { "enum": ["180_DEGREE"] },
+            "pulse_min_us": { "type": "integer", "minimum": 1 },
+            "pulse_max_us": { "type": "integer", "minimum": 1 },
+            "angle_range_deg": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 }
+          }
+        },
+        "channels": {
+          "type": "array",
+          "description": "舵机资源（Design/Config.md §9.2）。[待定] 项写 null。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "mechanism"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 1 },
+              "mechanism": { "enum": ["RELOAD", "FEED", "FIRE"] },
+              "channel": { "type": ["integer", "null"], "minimum": 0, "maximum": 15 },
+              "standby_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
+              "action_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 }
+            }
+          }
+        },
+        "strategy": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "舵机动作策略（Design/Config.md §9.3）",
+          "properties": {
+            "reload_lift_group": { "enum": ["USE_LIFT_ANGLES"] },
+            "reload_lower_group": { "enum": ["USE_LOWER_ANGLES"] },
+            "feed_sequence": { "enum": ["ANGLE1_TO_ANGLE2_TO_ANGLE1"] },
+            "fire_sequence": { "enum": ["STANDBY_TO_FIRE_TO_STANDBY"] },
+            "estop_fire_servo": { "enum": ["REJECT_ALL"] },
+            "estop_other_servos": { "enum": ["HOLD", "RAISE_RELOAD"] },
+            "comm_fault_servos": { "enum": ["HOLD"] },
+            "recovery_other_servos": { "enum": ["HOLD"] },
+            "fire_servo_safe_hold": { "enum": ["HOLD_CURRENT"] },
+            "out_of_range_action": { "enum": ["REJECT_AND_WARN"] },
+            "action_failure_action": { "enum": ["FAIL_AND_BLOCK_FIRE"] }
+          }
+        }
+      }
+    },
+
+    "vision": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "视觉系统（Design/Config.md §10）",
+      "required": ["transport", "port"],
+      "properties": {
+        "transport": { "enum": ["TCP"] },
+        "listen_address": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "target_field": { "type": "string" },
+        "target_unit": { "enum": ["rpm"] },
+        "target_range": { "type": "integer", "minimum": 0 },
+        "feedback_field": { "type": "string" },
+        "feedback_unit": { "enum": ["rpm"] },
+        "arrived_field": { "type": "string" },
+        "arrived_type": { "enum": ["bool"] },
+        "arrived_validity": { "enum": ["CURRENT_SHOT_ONLY"] },
+        "status_update_timeout_ms": { "type": "integer", "minimum": 1 },
+        "no_response_timeout_ms": { "type": "integer", "minimum": 1 },
+        "yaw_adjust_timeout_ms": { "type": "integer", "minimum": 1 },
+        "message_has_sequence": { "type": "boolean", "const": false },
+        "shot_scoped": { "type": "boolean", "const": true },
+        "error_codes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "link_lost": { "type": "string" },
+            "no_response_fallback": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "HTTP 服务与协议（Design/Config.md §11）",
+      "properties": {
+        "listen_address": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "static_resource_provider": { "enum": ["MAIN_PROGRAM"] },
+        "charset": { "type": "string" },
+        "request_body_limit_bytes": { "type": "integer", "minimum": 1 },
+        "response_body_limit_bytes": { "type": "integer", "minimum": 1 },
+        "request_timeout_ms": { "type": "integer", "minimum": 1 },
+        "auth_required": { "type": "boolean", "const": false },
+        "permission_levels_required": { "type": "boolean", "const": false },
+        "confirm_for_normal_ops": { "type": "boolean", "const": false },
+        "estop_recovery_requires_confirm": { "type": "boolean", "const": true },
+        "routes": {
+          "type": "array",
+          "description": "HTTP 路由表（Design/Config.md §11.2）",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "purpose"],
+            "properties": {
+              "method": {
+                "oneOf": [
+                  { "enum": ["GET", "POST"] },
+                  { "type": "array", "items": { "enum": ["GET", "POST"] }, "minItems": 1 }
+                ]
+              },
+              "path": { "type": "string", "pattern": "^/" },
+              "purpose": { "type": "string" },
+              "control_source": { "$ref": "#/$defs/controlSource" },
+              "request_fields": { "type": "array", "items": { "type": "string" } },
+              "response_fields": { "type": "array", "items": { "type": "string" } },
+              "status_restriction": { "type": "string" },
+              "is_emergency_path": { "type": "boolean" }
+            }
+          }
+        },
+        "error_response_template": {
+          "type": "object",
+          "description": "统一错误响应结构（Design/Config.md §11.3）",
+          "additionalProperties": true,
+          "properties": {
+            "request_id": { "type": "string" },
+            "ok": { "type": "boolean", "const": false },
+            "error": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "string" },
+                "message": { "type": "string" },
+                "details": { "type": "object" }
+              }
+            }
+          }
+        },
+        "error_codes": { "type": "array", "items": { "type": "string" } },
+        "http_status_mapping": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "manual_actions": {
+          "type": "array",
+          "description": "WEB 手动控制动作集（Design/Config.md §11.4）。action 取值集合的唯一来源。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action", "allowed_modes"],
+            "properties": {
+              "action": {
+                "enum": [
+                  "charge_start", "charge_stop", "charge_home",
+                  "reload_lift", "reload_lower", "feed_once",
+                  "force_set", "yaw_set", "servo_set", "fire_once",
+                  "stop_fire_set", "stop_fire_clear",
+                  "auto_start", "auto_stop"
+                ]
+              },
+              "requires_target": { "type": "boolean" },
+              "target_unit": { "type": ["string", "null"], "enum": ["rpm", "deg", null] },
+              "allowed_modes": { "type": "array", "items": { "$ref": "#/$defs/systemMode" }, "minItems": 1 }
+            }
+          }
+        }
+      }
+    },
+
+    "websocket": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "WebSocket 连接与消息（Design/Config.md §12）",
+      "properties": {
+        "message_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "heartbeat_period_ms": { "type": "integer", "minimum": 1 },
+        "connection_timeout_ms": { "type": "integer", "minimum": 1 },
+        "reconnect_backoff_s": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "reconnect_backoff_max_s": { "type": "integer", "minimum": 1 },
+        "reconnect_jitter": { "type": "boolean" },
+        "control_over_ws_allowed": { "type": "boolean", "const": false },
+        "multi_client_mode": { "enum": ["READ_ONLY_SUBSCRIBE"] },
+        "push_period_ms": { "type": "integer", "minimum": 1 },
+        "envelope_fields": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "heartbeat_message": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "应用层心跳信封（Design/Config.md §12.1）"
+        },
+        "message_types": {
+          "type": "array",
+          "description": "服务端消息类型与 payload 字段（Design/Config.md §12.3）",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "enum": [
+                  "system_state", "mechanism_state", "motor_state", "sensor_state",
+                  "yaw_state", "fire_progress", "fault", "estop_state",
+                  "control_arbiter", "parameter_changed", "error"
+                ]
+              },
+              "payload_fields": { "type": "array", "items": { "type": "string" } },
+              "error_message_payload": { "type": "boolean", "description": "error 类型额外含 code/message/details/request_id" }
+            }
+          }
+        }
+      }
+    },
+
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "持久化与配置加载（Design/Config.md §13）",
+      "required": ["file_format", "directory", "file_name"],
+      "properties": {
+        "file_format": { "enum": ["JSON"] },
+        "directory": { "type": "string", "minLength": 1 },
+        "file_name": { "type": "string", "pattern": "\\.json$" },
+        "write_mode": { "enum": ["PLAIN_FILE_WRITE"] },
+        "power_loss_protection": { "type": "boolean", "const": false },
+        "corruption_recovery": { "type": "boolean", "const": false },
+        "missing_param_recovery": { "enum": ["USE_BUILTIN_DEFAULT"] },
+        "version_migration": { "type": "boolean", "const": false },
+        "out_of_range_handling": { "enum": ["NONE"] },
+        "effective_timing": { "enum": ["HOT_RELOAD_IMMEDIATE"] },
+        "pid_edit_allowed_modes": { "type": "array", "items": { "$ref": "#/$defs/systemMode" } },
+        "pid_edit_control_source": { "$ref": "#/$defs/controlSource" },
+        "pid_abnormal_criterion": { "type": "string" },
+        "pid_abnormal_action": { "type": "string" },
+        "load_failure_action": { "type": "string" },
+        "load_timing": { "enum": ["INITIALIZATION"] },
+        "reserved_variable_count": { "type": "integer", "const": 100 },
+        "reserved_variable_pattern": { "type": "string" },
+        "reserved_variable_type": { "enum": ["int32"] }
+      }
+    },
+
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "故障与安全（Design/Config.md §14）",
+      "properties": {
+        "table": {
+          "type": "array",
+          "description": "故障表（Design/Config.md §14.2）。禁止新增该表之外的故障码。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "code", "severity"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+              "code": {
+                "type": "string",
+                "pattern": "^[FWEI]-[A-Z]+-[0-9]{3}$",
+                "description": "故障码族，如 F-CAN-001、W-VISION-002、E-ESTOP-001"
+              },
+              "trigger": { "type": "string" },
+              "severity": { "$ref": "#/$defs/faultSeverity" },
+              "auto_recovery": { "type": "boolean" },
+              "recovery_action": { "type": "string" },
+              "requires_confirm": { "type": "boolean" }
+            }
+          }
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "已确定安全规则（Design/Config.md §14.1）。以结构化字段表达，供 ATOM-14 判定。应至少覆盖：实际发射授权、SBUS 接管后的自动流程终止、一般故障恢复顺序、软件急停动作、急停人工解除、YAW 未到位、发射完成后的 YAW 清除、通信异常时的电机/舵机/发射舵机行为。"
+        }
+      }
+    },
+
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "线程、并发与调度（Design/Config.md §15）",
+      "properties": {
+        "motor_loop_task": { "enum": ["DEDICATED_THREAD"] },
+        "can_rx_task": { "enum": ["DEDICATED_TASK"] },
+        "can_tx_task": { "enum": ["DEDICATED_TASK"] },
+        "iic_access": { "enum": ["SERIALIZED"] },
+        "state_sync": { "enum": ["ZERO_COPY"] },
+        "control_change_action": { "type": "string" },
+        "feed_wait_behavior": { "type": "string" },
+        "estop_variable_type": { "enum": ["BOOL"] },
+        "estop_check_before_action": { "type": "boolean", "const": true },
+        "safety_action_exceptions": { "type": "array", "items": { "type": "string" } },
+        "motor_loop_priority": { "enum": ["HIGH", "MEDIUM_HIGH", "MEDIUM", "LOW"] },
+        "state_machine_priority": { "enum": ["HIGH", "MEDIUM_HIGH", "MEDIUM", "LOW"] },
+        "iic_priority": { "enum": ["HIGH", "MEDIUM_HIGH", "MEDIUM", "LOW"] },
+        "network_priority": { "enum": ["HIGH", "MEDIUM_HIGH", "MEDIUM", "LOW"] },
+        "sched_policy": { "enum": ["SCHED_OTHER", "SCHED_FIFO", "SCHED_RR"] },
+        "stack_size_bytes": { "type": "integer", "minimum": 65536 }
+      }
+    },
+
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "日志与诊断（Design/Config.md §16）",
+      "properties": {
+        "level": { "enum": ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] },
+        "output_directory": { "type": "string", "minLength": 1 },
+        "stdout_echo": { "enum": ["NONE", "CRITICAL_ONLY", "ALL"] },
+        "format": { "enum": ["JSON_LINES"] },
+        "timestamp_format": { "enum": ["UTC_ISO8601_MS"] },
+        "rotation_enabled": { "type": "boolean" },
+        "max_files": { "type": "integer", "minimum": 1 },
+        "max_file_size_bytes": { "type": "integer", "minimum": 1 },
+        "max_total_size_bytes": { "type": "integer", "minimum": 1 },
+        "fault_history_limit": { "type": "integer", "minimum": 1 },
+        "fault_history_policy": { "enum": ["RING_LATEST_FIRST"] },
+        "flush_policy": { "type": "string" },
+        "required_events": { "type": "array", "items": { "type": "string" } },
+        "fields": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+
+  "patternProperties": {
+    "^reserved_[0-9]{3}$": {
+      "type": "integer",
+      "description": "预留持久化变量 reserved_001 ~ reserved_100，类型 int32（Design/Config.md §13.3）"
+    }
+  },
+
+  "$defs": {
+    "controlMode": { "enum": ["DISABLED", "TORQUE", "VELOCITY", "POSITION", "CURRENT"] },
+    "controlSource": { "enum": ["NONE", "SBUS", "WEB", "AUTO"] },
+    "systemMode": {
+      "enum": [
+        "UNINITIALIZED", "INITIALIZING", "INIT_FAILED", "STANDBY", "MANUAL",
+        "AUTO_FIRE", "DEBUG", "CALIBRATION", "RECOVERY", "SOFTWARE_ESTOP", "FAULT"
+      ]
+    },
+    "autoFireState": {
+      "enum": [
+        "IDLE", "AUTO_PREPARE", "CHARGE", "FORCE", "SHOT_1_YAW", "RELOAD_LIFT",
+        "FEED", "FEED_WAIT", "RELOAD_LOWER", "SHOT_N_YAW", "FIRE_READY",
+        "FIRING", "FIRE_COMPLETED", "AUTO_COMPLETED", "AUTO_TERMINATED"
+      ]
+    },
+    "faultSeverity": { "enum": ["INFO", "WARNING", "SEVERE", "ESTOP"] },
+
+    "controlSourceRules": {
+      "type": "array",
+      "description": "控制源选择规则（Design/Config.md §7.2）。条件到控制源的映射，按顺序求值。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "then_source"],
+        "properties": {
+          "id": {
+            "enum": [
+              "startup_no_web", "web_connected", "sbus_online_auto_mode_true",
+              "sbus_online_auto_mode_false", "sbus_lost", "software_estop"
+            ]
+          },
+          "when": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "web_online": { "type": ["boolean", "null"] },
+              "sbus_online": { "type": ["boolean", "null"] },
+              "sbus_auto_mode": { "type": ["boolean", "null"] },
+              "software_estop": { "type": ["boolean", "null"] }
+            }
+          },
+          "then_source": {
+            "oneOf": [
+              { "$ref": "#/$defs/controlSource" },
+              { "enum": ["OVERRIDE_ALL"] }
+            ]
+          },
+          "never_changes_fire_priority": {
+            "type": "boolean",
+            "const": true,
+            "description": "控制源选择结果不改变实际发射授权优先级 SBUS > WEB > 自动流程"
+          }
+        }
+      }
+    }
+  }
+}
+
+
