@@ -167,7 +167,9 @@ public:
     // FIRE_COMPLETED -> CHARGE/AUTO_COMPLETED 由 current_shot 约束（ATOM02-BUG-001）。
     // AUTO_PREPARE 目标一律转交 BeginNewAutoFireRun（唯一流程入口，ATOM02-BUG-008）。
     // IDLE 表示"未启动"，等价于已停止：此时 AUTO_TERMINATED 为幂等空操作，
-    // 返回 AUTO_FLOW_NOT_STARTED 且不改变状态（ATOM02-BUG-010）。
+    // 返回 ALREADY_IN_TARGET 且不改变状态（ATOM02-BUG-010/020）。
+    // ATOM02-BUG-020：Config §11.4 允许「任意普通模式」触发 auto_stop，故终止路径
+    // 不受 AUTO_FIRE 模式前置限制；有活动流程时终止，无活动流程时幂等返回。
     // FIRE_READY -> FIRING 的控制权持有者由调用方显式给出（ATOM02-BUG-002）。
     AutoFireTransitionResult RequestAutoFireState(AutoFireState target,
                                                   ControlSource control_holder) noexcept;

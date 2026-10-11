@@ -155,3 +155,87 @@ target_compile_options(marshland PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
 
 target_link_libraries(marshland PRIVATE marshland_public)
+
+find_package(Threads REQUIRED)
+target_link_libraries(marshland_app PUBLIC Threads::Threads)
+target_compile_options(marshland_app PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
+option(MARSHLAND_BUILD_TESTS "Build ARM gateway and public-contract tests" OFF)
+if(MARSHLAND_BUILD_TESTS)
+    enable_testing()
+
+    # This target intentionally receives no ATOM or AppCoordinator include paths.
+    add_library(marshland_public_contracts_check OBJECT Tests/PublicContractsCompile.cpp)
+    target_link_libraries(marshland_public_contracts_check PRIVATE Marshland::PublicHeaders)
+    target_compile_options(marshland_public_contracts_check PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
+    add_executable(marshland_gateway_tests Tests/AppCoordinatorTests.cpp)
+    target_include_directories(marshland_gateway_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(marshland_gateway_tests PRIVATE marshland_public)
+    target_compile_options(marshland_gateway_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
+    set(MARSHLAND_CTEST_CASES
+        public.types
+        runtime.registration
+        runtime.failure_exception
+        state.policy_tables
+        state.inputs_events
+        state.intent_fire
+        state.auto_flow
+        app.coordinator_ports
+        app.read_lease_concurrency
+        process.exit_signals
+        public.enum_defaults
+        public.monotonic_clock
+        runtime.context_and_order
+        runtime.optional_failure
+        runtime.fallback_names
+        runtime.unknown_exception
+        runtime.empty_and_destructor
+        state.fire_matrix
+        state.intent_safety_matrix
+        state.stop_clear_matrix
+        state.ordinary_intents
+        state.mode_matrix
+        state.auto_edge_matrix
+        state.all_strings
+        state.reset_and_update
+        state.event_buffer
+        state.four_shot_run
+        state.auto_rejections
+        state.manual_fire_modes
+        app.startup_rejections
+        app.startup_failures
+        app.startup_interrupt
+        app.gate_modes
+        app.all_ports
+        app.stop_flag_atomic_commit
+        app.read_view_move
+        app.clock_and_events)
+
+    if(CMAKE_CROSSCOMPILING OR NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm)")
+        find_program(MARSHLAND_QEMU_AARCH64 NAMES qemu-aarch64 qemu-aarch64-static)
+        if(MARSHLAND_QEMU_AARCH64)
+            set(MARSHLAND_ARM_SYSROOT "/usr/aarch64-linux-gnu" CACHE PATH "ARM emulator library root")
+            foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
+                add_test(NAME "marshland.${case_name}"
+                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
+                            $<TARGET_FILE:marshland_gateway_tests> "${case_name}")
+            endforeach()
+        else()
+            message(STATUS "ARM tests will be built, but execution needs an ARM host or qemu-aarch64; no CTest cases registered.")
+        endif()
+    else()
+        foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
+            add_test(NAME "marshland.${case_name}" COMMAND marshland_gateway_tests "${case_name}")
+        endforeach()
+    endif()
+    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
+        if(TEST "marshland.${case_name}")
+            set_tests_properties("marshland.${case_name}" PROPERTIES TIMEOUT 30)
+        endif()
+    endforeach()
+endif()

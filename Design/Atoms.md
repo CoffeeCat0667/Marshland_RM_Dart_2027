@@ -30,7 +30,7 @@
 |---|---|---|---|
 | ATOM-01 | 进程生命周期与启动协调 | 配置读取、模块初始化、待机/失败、关闭 | `Atomic/ATOM-01_Runtime.md` |
 | ATOM-02 | 系统状态机与控制权仲裁 | 状态迁移、控制源选择、SBUS>WEB>AUTO 发射授权 | `Atomic/ATOM-02_State_Arbitration.md` |
-| ATOM-03 | SBUS 遥控输入 | ET16S 帧接收、解析、自动模式标志、失联降级和重连 | `Atomic/ATOM-03_SBUS.md` |
+| ATOM-03 | SBUS 遥控输入 | UART10 25 字节 SBUS 帧接收与解析、CH1～CH11 映射、公共互斥通道快照、自动模式/失联降级和重连 | `Atomic/ATOM-03_SBUS.md` |
 | ATOM-04 | CAN/SocketCAN 传输适配 | CAN 初始化、单帧收发、协议分派、8-byte 零力矩帧 | `Atomic/ATOM-04_CAN.md` |
 | ATOM-05 | 电机、编码器与 PID | 所有电机命令/反馈、编码器、闭环 PID、WEB 授权热加载 | `Atomic/ATOM-05_Motor_PID.md` |
 | ATOM-06 | GPIO 与限位输入 | GPIO 采样、去抖、蓄力双电机回零判定 | `Atomic/ATOM-06_GPIO_Sensors.md` |
@@ -99,6 +99,7 @@
 | 0.9 | 2026-09-25 | 同步 `Design/Atomic/ATOM-01`～`ATOM-19` 至 PRD 0.8、PEF 1.3、Interface 1.3、Config 0.6：允许超时回退置 YAW 到位为 `True`、PEF 引用改为 1.3、校准进入无需前置校验、换弹计时措辞统一、全部同步基线更新。 |
 | 0.10 | 2026-09-26 | 加入程序代号 Marshland；同步至 `Config.md` v0.7 参数基准（PRD 0.9、PEF 1.4、Interface 1.4、Config 0.7），占位术语统一为 `[待定]`，统一蓄力回零为两个电机表述。 |
 | 0.11 | 2026-10-10 | 同步 PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8：双 M3508 换弹、定时运行后零转速保持、急停不抬起、单侧失败双侧零力矩、恢复失败 FAULT；19 个 Atom 数量不变。 |
+
 
 
 

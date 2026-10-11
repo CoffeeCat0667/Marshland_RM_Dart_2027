@@ -19,6 +19,9 @@
 //                   不再恒为 NONE（普通命令仍由急停锁存拒绝）
 //   ATOM02-BUG-010  IDLE（未启动）收到 auto_stop / SBUS 接管终止为显式幂等空操作
 //   ATOM02-BUG-016  导出 IsOperationalMode 供上层复用（消除安全闸门双份定义）
+//   ATOM02-BUG-018  STOP_FIRE_CLEAR 补控制权检查：WEB 不得在 SBUS 持有控制权时清除
+//   ATOM02-BUG-019  STOP_FIRE_CLEAR 补阻断故障检查（仅 SEVERE/ESTOP）
+//   ATOM02-BUG-020  auto_stop 放开到任意普通模式；无活动流程时幂等返回 ALREADY_IN_TARGET
 // ============================================================================
 #include "StateArbitration.hpp"
 
@@ -318,14 +321,29 @@ IntentDecision EvaluateIntent(const ArbitrationContext& ctx, const ControlIntent
         return decision;
     }
 
-    // Interface §9.2 第三条停止发射标志清除路径：仅手动/调试模式，且必须已退出自动流程
+    // Interface §9.2 第三条停止发射标志清除路径：仅手动/调试模式，且必须已退出自动流程。
+    // ATOM02-BUG-018/019：清除会**放宽**安全约束，因此除有效性/来源/模式/活动流程外，
+    // 还必须服从控制权优先级与阻断故障——不得在 SBUS 持有控制权时由 WEB 清除，
+    // 也不得在阻断故障期间清除（Interface §9.2「不得绕过限位和故障保护」）。
     if (intent.kind == IntentKind::STOP_FIRE_CLEAR) {
         if (intent.source != ControlSource::WEB && intent.source != ControlSource::SBUS) {
             decision.reason = RejectReason::LOWER_PRIORITY_CONFLICT;
             return decision;
         }
+        // ATOM02-BUG-018：判别取 Config §7.2 的控制源选择结果，而不是 sbus_online——
+        // SBUS 在线且自动模式为 True 时控制源为 AUTO，此时不应误拒 WEB 清除。
+        // SBUS 来源为最高优先级，不受本限制。
+        if (intent.source == ControlSource::WEB && ctx.control_source == ControlSource::SBUS) {
+            decision.reason = RejectReason::LOWER_PRIORITY_CONFLICT;
+            return decision;
+        }
         if (!IsStopFireSetMode(ctx.system_mode)) {
             decision.reason = RejectReason::NOT_READY;
+            return decision;
+        }
+        // ATOM02-BUG-019：清除前应用既有阻断故障语义（仅 SEVERE/ESTOP，见 IsFaultBlocking）
+        if (IsFaultBlocking(ctx.inputs)) {
+            decision.reason = RejectReason::FAULT_ACTIVE;
             return decision;
         }
         if (ctx.auto_fire_state != AutoFireState::IDLE &&
@@ -351,10 +369,9 @@ IntentDecision EvaluateIntent(const ArbitrationContext& ctx, const ControlIntent
         decision.reason = RejectReason::NOT_READY;
         return decision;
     }
-    if (intent.kind == IntentKind::AUTO_STOP && ctx.system_mode != SystemMode::AUTO_FIRE) {
-        decision.reason = RejectReason::NOT_READY;
-        return decision;
-    }
+    // ATOM02-BUG-020：Config §11.4 规定 auto_stop 的允许模式为「任意普通模式」，
+    // 普通模式的合法性已由上面的 IsOperationalMode 覆盖，故不再限定 AUTO_FIRE；
+    // 之后仍受通用优先级检查（原子操作 8）约束。
 
     // 发射意图：控制权归属由授权函数按显式 holder 判定并回填 priority_conflict
     // （ATOM02-BUG-002；原子操作 8 由此覆盖）
@@ -772,6 +789,30 @@ AutoFireTransitionResult StateArbitrator::RequestAutoFireState(
     if (target == AutoFireState::AUTO_PREPARE) {
         return BeginNewAutoFireRun();
     }
+    // ATOM02-BUG-020：auto_stop 的提交路径。Config §11.4 允许「任意普通模式」，
+    // 因此本分支位于终态检查与 AUTO_FIRE 模式前置之前：
+    //   * 无活动流程（IDLE / AUTO_COMPLETED / AUTO_TERMINATED）→ 幂等停止：
+    //     ALREADY_IN_TARGET，不改变状态、不恢复旧流程、不启动新流程（ATOM02-BUG-010）；
+    //   * 有活动流程 → 终止，不暂停、不恢复（原子操作 10/11）。
+    if (target == AutoFireState::AUTO_TERMINATED) {
+        if (!is_auto_fire_active()) {
+            result.reason = RejectReason::ALREADY_IN_TARGET;
+            return result;
+        }
+        const AutoFireState terminated_from = ctx_.auto_fire_state;
+        ctx_.auto_fire_state = AutoFireState::AUTO_TERMINATED;
+        result.accepted = true;
+        result.transition_reason = TransitionReason::AUTO_FLOW_ABORT;
+
+        StateEvent terminated{};
+        terminated.kind = EventKind::AUTO_FIRE_TRANSITION;
+        terminated.reason = TransitionReason::AUTO_FLOW_ABORT;
+        terminated.from_auto_fire = terminated_from;
+        terminated.to_auto_fire = AutoFireState::AUTO_TERMINATED;
+        PushEvent(terminated);
+        return result;
+    }
+
     // 原子操作 11：已终止/已完成的自动流程不得续跑
     if (IsAutoFireStateTerminal(ctx_.auto_fire_state)) {
         result.reason = RejectReason::AUTO_FLOW_TERMINATED;
@@ -785,17 +826,7 @@ AutoFireTransitionResult StateArbitrator::RequestAutoFireState(
     TransitionReason reason = TransitionReason::AUTO_FLOW_STEP;
     bool accepted = false;
 
-    if (target == AutoFireState::AUTO_TERMINATED) {
-        // ATOM02-BUG-010：IDLE 表示"未启动"，等价于已停止（Config §11.4 的
-        // auto_stop 允许模式为任意普通模式），此时为幂等空操作，不改变状态。
-        if (!is_auto_fire_active()) {
-            result.reason = RejectReason::AUTO_FLOW_NOT_STARTED;
-            return result;
-        }
-        // 主动终止（如 WEB auto_stop）：只终止正在运行的流程，不暂停、不恢复
-        accepted = true;
-        reason = TransitionReason::AUTO_FLOW_ABORT;
-    } else if (target == AutoFireState::AUTO_COMPLETED) {
+    if (target == AutoFireState::AUTO_COMPLETED) {
         accepted = IsAutoFireTransitionAllowed(ctx_.auto_fire_state, target, shot_stage());
         reason = TransitionReason::AUTO_FLOW_DONE;
         // Interface §6.6 total_shots = 4：只有第 4 发完成后才能进入 AUTO_COMPLETED

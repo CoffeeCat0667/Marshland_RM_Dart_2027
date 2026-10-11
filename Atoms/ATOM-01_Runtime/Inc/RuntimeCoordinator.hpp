@@ -9,6 +9,7 @@
 //
 //   RuntimeCoordinator 自身（模块注册、就绪汇总、失败回滚、关闭释放）仍属
 //   ATOM-01 私有，不上提。
+#include <cstddef>
 #include <cstdint>
 
 #include "ILifecycle.hpp"
@@ -68,6 +69,12 @@ public:
     // 注册先后顺序执行；失败原因通过 lastRegistrationError() 查询。
     bool addModule(ModuleRegistration registration);
     ModuleRegistrationError lastRegistrationError() const noexcept;
+
+    // ATOM01-BUG-011：启动前可查询的**真实**注册数量。装配层必须在"模块注册结束、
+    // 首次 start() 之前"判断注册表是否为空；stepResults() 只有 start() 之后才有
+    // 内容，无法承担该判据。直接返回 modules_.size()，不维护第二份计数，也不创建
+    // 占位模块。查询不改变状态、不调用 initialize、不产生分配或硬件访问。
+    std::size_t registeredModuleCount() const noexcept;
 
     // ATOM01-BUG-004：内部已捕获全部异常（含 reserve/push_back/结果快照拷贝的
     // 分配失败）并统一回滚为 InitFailed，因此声明为 noexcept；调用方（例如

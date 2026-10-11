@@ -80,6 +80,12 @@ ModuleRegistrationError RuntimeCoordinator::lastRegistrationError() const noexce
     return registration_error_;
 }
 
+std::size_t RuntimeCoordinator::registeredModuleCount() const noexcept
+{
+    // ATOM01-BUG-011：单一真相就是 modules_ 本身，不做第二份计数。
+    return modules_.size();
+}
+
 RuntimeStartResult RuntimeCoordinator::currentResult() const noexcept
 {
     RuntimeStartResult result{};

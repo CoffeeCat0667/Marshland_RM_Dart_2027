@@ -3,7 +3,8 @@
 #
 # 本目标必须保持为叶子节点：只含类型与 inline 工具，不链接任何 ATOM，
 # 否则会与 AppCoordinator 形成依赖环。
-#   允许：MarshlandTypes.hpp、ILifecycle.hpp、StateArbitrationTypes.hpp
+#   允许：MarshlandTypes.hpp、ILifecycle.hpp、StateArbitrationTypes.hpp、
+#         IMonotonicClock.hpp、AppInterfaces.hpp、IConfigView.hpp
 #   禁止：任何 AppCoordinator 相关源码（见 Atoms/Public/AppCoordinator/）
 # ============================================================================
 add_library(marshland_public_headers INTERFACE)
@@ -15,7 +16,12 @@ target_include_directories(marshland_public_headers INTERFACE
 target_sources(marshland_public_headers INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/MarshlandTypes.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ILifecycle.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/StateArbitrationTypes.hpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/StateArbitrationTypes.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/IMonotonicClock.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AppInterfaces.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/IConfigView.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/SbusTypes.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/SbusInterfaces.hpp")
 
 # ---------------------------------------------------------------------------
 # 顶层装配与桥接层（AppCoordinator）
