@@ -7,6 +7,14 @@
 
 namespace marshland::sbus {
 
+enum class UartReadStatus : std::uint8_t {
+    DATA,
+    TIMEOUT,
+    CANCELLED,
+    TEMPORARY_ERROR,
+    DEVICE_ERROR,
+};
+
 class IUartByteStream {
 public:
     virtual ~IUartByteStream() = default;
@@ -14,9 +22,8 @@ public:
     // Applies the IConfigView-provided serial device before reading.
     virtual bool configure(const SbusSerialParameters& parameters) noexcept = 0;
 
-    // Returns false on transport failure. A successful call may return zero bytes.
-    virtual bool read(std::uint8_t* destination, std::size_t capacity,
-                      std::size_t& bytes_read) noexcept = 0;
+    virtual UartReadStatus read(std::uint8_t* destination, std::size_t capacity,
+                                std::size_t& bytes_read) noexcept = 0;
 
     // Must interrupt a blocked read and make a subsequent read fail or return.
     virtual void cancel() noexcept = 0;

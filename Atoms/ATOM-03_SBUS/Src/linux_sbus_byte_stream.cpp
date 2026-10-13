@@ -7,6 +7,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <climits>
 #include <cstddef>
 
 namespace marshland::atom03 {
@@ -44,7 +45,6 @@ static_assert(offsetof(LinuxTermios2, c_ospeed) == 40U,
 #endif
 #define TCSETS2 _IOW('T', 0x2B, struct LinuxTermios2)
 
-constexpr int kReadTimeoutMs = 100;
 constexpr speed_t kSbusBaudrate = 100000U;
 
 } // namespace
@@ -89,7 +89,8 @@ bool LinuxSbusByteStream::configure(
     const marshland::sbus::SbusSerialParameters& parameters) noexcept
 {
     if (parameters.serial_device.empty() || cancel_pipe_[0] < 0 ||
-        cancel_pipe_[1] < 0) {
+        cancel_pipe_[1] < 0 || parameters.read_timeout_ms >
+            static_cast<std::uint32_t>(INT_MAX)) {
         return false;
     }
 
@@ -125,17 +126,19 @@ bool LinuxSbusByteStream::configure(
 
     closeDevice();
     device_fd_ = new_fd;
+    read_timeout_ms_ = static_cast<int>(parameters.read_timeout_ms);
     drainCancelPipe();
     return true;
 }
 
-bool LinuxSbusByteStream::read(std::uint8_t* destination, std::size_t capacity,
-                                 std::size_t& bytes_read) noexcept
+marshland::sbus::UartReadStatus LinuxSbusByteStream::read(
+    std::uint8_t* destination, std::size_t capacity,
+    std::size_t& bytes_read) noexcept
 {
     bytes_read = 0;
     if (destination == nullptr || capacity == 0U || device_fd_ < 0 ||
         cancel_pipe_[0] < 0) {
-        return false;
+        return marshland::sbus::UartReadStatus::DEVICE_ERROR;
     }
 
     struct pollfd descriptors[2]{};
@@ -144,33 +147,36 @@ bool LinuxSbusByteStream::read(std::uint8_t* destination, std::size_t capacity,
     descriptors[1].fd = cancel_pipe_[0];
     descriptors[1].events = POLLIN;
 
-    const int result = ::poll(descriptors, 2, kReadTimeoutMs);
+    const int result = ::poll(descriptors, 2, read_timeout_ms_);
     if (result < 0) {
-        return errno == EINTR;
+        return errno == EINTR ? marshland::sbus::UartReadStatus::TEMPORARY_ERROR
+                              : marshland::sbus::UartReadStatus::DEVICE_ERROR;
     }
     if (result == 0) {
-        return true;
+        return marshland::sbus::UartReadStatus::TIMEOUT;
     }
     if ((descriptors[1].revents & POLLIN) != 0) {
         drainCancelPipe();
-        return false;
+        return marshland::sbus::UartReadStatus::CANCELLED;
     }
     if ((descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
-        return false;
+        return marshland::sbus::UartReadStatus::DEVICE_ERROR;
     }
     if ((descriptors[0].revents & POLLIN) == 0) {
-        return true;
+        return marshland::sbus::UartReadStatus::TIMEOUT;
     }
 
     const ssize_t result_bytes = ::read(device_fd_, destination, capacity);
     if (result_bytes < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            return true;
+            return errno == EINTR ? marshland::sbus::UartReadStatus::TEMPORARY_ERROR
+                                  : marshland::sbus::UartReadStatus::TEMPORARY_ERROR;
         }
-        return false;
+        return marshland::sbus::UartReadStatus::DEVICE_ERROR;
     }
     bytes_read = static_cast<std::size_t>(result_bytes);
-    return true;
+    return bytes_read == 0U ? marshland::sbus::UartReadStatus::DEVICE_ERROR
+                            : marshland::sbus::UartReadStatus::DATA;
 }
 
 void LinuxSbusByteStream::cancel() noexcept

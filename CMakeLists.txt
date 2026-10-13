@@ -190,6 +190,31 @@ if(MARSHLAND_BUILD_TESTS)
     target_compile_options(marshland_gateway_tests PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
 
+    # ATOM-03 SBUS tests
+    add_executable(marshland_atom03_tests Tests/Atom03SbusTests.cpp)
+    target_include_directories(marshland_atom03_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(marshland_atom03_tests PRIVATE
+        Marshland::atom_03_sbus
+        Marshland::PublicHeaders)
+    target_compile_options(marshland_atom03_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
+    # ATOM-15 Config tests
+    add_executable(marshland_atom15_tests Tests/Atom15ConfigTests.cpp)
+    target_include_directories(marshland_atom15_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(marshland_atom15_tests PRIVATE
+        Marshland::atom_15_config_persistence
+        Marshland::PublicHeaders)
+    target_compile_options(marshland_atom15_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
+    # Integration tests (Entry + all ATOMs)
+    add_executable(marshland_integration_tests Tests/IntegrationTests.cpp)
+    target_include_directories(marshland_integration_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(marshland_integration_tests PRIVATE marshland_public)
+    target_compile_options(marshland_integration_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
     set(MARSHLAND_CTEST_CASES
         public.types
         runtime.registration
@@ -229,14 +254,76 @@ if(MARSHLAND_BUILD_TESTS)
         app.read_view_move
         app.clock_and_events)
 
+    # ATOM-03 SBUS test cases
+    set(MARSHLAND_ATOM03_CASES
+        sbus.config_defaults
+        sbus.snapshot_structure
+        sbus.store_read_write
+        sbus.store_concurrency
+        sbus.uart_configure
+        sbus.uart_read_data
+        sbus.uart_read_timeout
+        sbus.uart_cancel
+        sbus.serial_parameters
+        sbus.estop_state_enum
+        sbus.frame_validity_enum
+        sbus.control_source_mapping)
+
+    # ATOM-15 Config test cases
+    set(MARSHLAND_ATOM15_CASES
+        config.store_default_state
+        config.store_load_valid
+        config.store_load_invalid_json
+        config.store_load_missing_file
+        config.store_get_string
+        config.store_get_int
+        config.store_get_int_wrong_type
+        config.store_get_string_wrong_type
+        config.store_missing_key
+        config.store_motor_array
+        config.store_nested_keys
+        config.store_reload
+        config.store_interface
+        config.store_thread_safety
+        config.store_schema_version)
+
+    # Integration test cases
+    set(MARSHLAND_INTEGRATION_CASES
+        integration.full_startup
+        integration.config_load_failure
+        integration.atom15_before_atom03
+        integration.motor_config_6_motors
+        integration.can_zero_torque_frames
+        integration.runtime_context_transfer
+        integration.shutdown_cleanup)
+
     if(CMAKE_CROSSCOMPILING OR NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm)")
         find_program(MARSHLAND_QEMU_AARCH64 NAMES qemu-aarch64 qemu-aarch64-static)
         if(MARSHLAND_QEMU_AARCH64)
             set(MARSHLAND_ARM_SYSROOT "/usr/aarch64-linux-gnu" CACHE PATH "ARM emulator library root")
+
             foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
                 add_test(NAME "marshland.${case_name}"
                     COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
                             $<TARGET_FILE:marshland_gateway_tests> "${case_name}")
+            endforeach()
+
+            foreach(case_name IN LISTS MARSHLAND_ATOM03_CASES)
+                add_test(NAME "marshland.${case_name}"
+                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
+                            $<TARGET_FILE:marshland_atom03_tests> "${case_name}")
+            endforeach()
+
+            foreach(case_name IN LISTS MARSHLAND_ATOM15_CASES)
+                add_test(NAME "marshland.${case_name}"
+                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
+                            $<TARGET_FILE:marshland_atom15_tests> "${case_name}")
+            endforeach()
+
+            foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
+                add_test(NAME "marshland.${case_name}"
+                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
+                            $<TARGET_FILE:marshland_integration_tests> "${case_name}")
             endforeach()
         else()
             message(STATUS "ARM tests will be built, but execution needs an ARM host or qemu-aarch64; no CTest cases registered.")
@@ -245,8 +332,22 @@ if(MARSHLAND_BUILD_TESTS)
         foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
             add_test(NAME "marshland.${case_name}" COMMAND marshland_gateway_tests "${case_name}")
         endforeach()
+
+        foreach(case_name IN LISTS MARSHLAND_ATOM03_CASES)
+            add_test(NAME "marshland.${case_name}" COMMAND marshland_atom03_tests "${case_name}")
+        endforeach()
+
+        foreach(case_name IN LISTS MARSHLAND_ATOM15_CASES)
+            add_test(NAME "marshland.${case_name}" COMMAND marshland_atom15_tests "${case_name}")
+        endforeach()
+
+        foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
+            add_test(NAME "marshland.${case_name}" COMMAND marshland_integration_tests "${case_name}")
+        endforeach()
     endif()
-    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
+
+    # Set timeout for all tests
+    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES MARSHLAND_ATOM03_CASES MARSHLAND_ATOM15_CASES MARSHLAND_INTEGRATION_CASES)
         if(TEST "marshland.${case_name}")
             set_tests_properties("marshland.${case_name}" PROPERTIES TIMEOUT 30)
         endif()

@@ -55,6 +55,7 @@ ConfigLoadResult LoadSbusConfig(const marshland::config::IConfigView& view,
         return {false, error};
     }
     output.loss_timeout_ms = static_cast<std::uint32_t>(value);
+    output.serial.read_timeout_ms = output.receive_period_ms;
     if (!requiredInt(view, "sbus.frame_bytes", value, error)) {
         return {false, error};
     }

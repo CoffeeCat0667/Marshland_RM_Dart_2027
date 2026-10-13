@@ -5,7 +5,8 @@ namespace marshland::atom03 {
 bool SbusDecoder::decode(const std::uint8_t* frame, std::size_t size,
                          marshland::sbus::SbusChannelSnapshot& output) const noexcept
 {
-    if (frame == nullptr || size != config_.frame_bytes || frame[0] != 0x0FU) {
+    if (frame == nullptr || size != config_.frame_bytes ||
+        size < marshland::sbus::kMinimumDecodeFrameBytes || frame[0] != 0x0FU) {
         return false;
     }
     marshland::sbus::SbusChannelSnapshot decoded{};

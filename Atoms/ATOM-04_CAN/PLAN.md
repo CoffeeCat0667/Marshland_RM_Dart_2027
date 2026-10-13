@@ -1,5 +1,12 @@
 # ATOM-04_CAN 实现方案
 
+> 状态：**已实施代码，通过静态/形式化验证、aarch64 交叉编译与 ASan/UBSan；已过一轮代码评审
+> 并修复 7 项缺陷（见 §14）。未在目标 ARM 主机上联调。**
+> 更新日期：2026-10-12（评审修复 v1.1）
+> 验证方式：`Atoms/ATOM-04_CAN/.verify_atom04.sh`（语法/警告门、SocketCAN 头检查、
+> aarch64 目标编译、逻辑测试执行、依赖方向检查），5/5 通过。
+> 接入说明：`Rule/ATOM4ConnectProject.md`。
+
 ## 1. 目标与边界
 
 实现 ATOM-04 的 CAN/SocketCAN 传输适配模块，提供：
@@ -117,3 +124,155 @@ Linux SocketCAN 实现负责 `AF_CAN`、`CAN_RAW`、接口索引、读写超时�
 - 上层对模块 target 名称和链接依赖的约定。
 
 在这些接口明确前，不实现猜测性的跨模块调用。
+---
+
+## 9. 实施结果（2026-10-12）
+
+用户已确认：
+
+- 依据 `Config/dart_control.json` 的 `motor[].id`/`motor[].node` 与
+  `Design/Config.md` §6.2 确定槽位映射，**不新增配置键**；
+- **不解析反馈帧**，反馈帧原样投递给 ATOM-05；
+- 安全静默端口**仅声明**，接线由装配层负责；
+- 时钟为 ATOM 内部单调时钟，**严格不可注入**；
+- SocketCAN 接口名使用 `"can0"`；
+- 授权实编译验证。
+
+### 9.1 本次实施文件清单
+
+**新增（13 个文件）**
+
+- `Atoms/Public/CanTypes.hpp`
+- `Atoms/Public/CanInterfaces.hpp`
+- `Atoms/ATOM-04_CAN/Inc/atom04_can/can_config.hpp`
+- `Atoms/ATOM-04_CAN/Inc/atom04_can/motor_frame_codec.hpp`
+- `Atoms/ATOM-04_CAN/Inc/atom04_can/socketcan_transport.hpp`
+- `Atoms/ATOM-04_CAN/Inc/atom04_can/protocol_dispatcher.hpp`
+- `Atoms/ATOM-04_CAN/Inc/atom04_can/can_core.hpp`
+- `Atoms/ATOM-04_CAN/Inc/atom04_can/lifecycle_adapter.hpp`
+- `Atoms/ATOM-04_CAN/Src/can_config.cpp`
+- `Atoms/ATOM-04_CAN/Src/motor_frame_codec.cpp`
+- `Atoms/ATOM-04_CAN/Src/socketcan_transport.cpp`
+- `Atoms/ATOM-04_CAN/Src/protocol_dispatcher.cpp`
+- `Atoms/ATOM-04_CAN/Src/can_core.cpp`
+- `Atoms/ATOM-04_CAN/Src/lifecycle_adapter.cpp`
+- `Atoms/ATOM-04_CAN/Tests/Atom04CanTests.cpp`
+- `Atoms/ATOM-04_CAN/.verify_atom04.sh`
+- `Rule/ATOM4ConnectProject.md`
+
+**修改（2 个文件）**
+
+- `Atoms/Public/Headers/CMakeLists.txt`（登记 `CanTypes.hpp`、`CanInterfaces.hpp`，同步允许列表注释）
+- `Atoms/ATOM-04_CAN/PLAN.md`（本节）
+
+**明确未修改**
+
+- 上层 `NewVersion/CMakeLists.txt`、`Entry.cpp`；
+- `Atoms/CMakeLists.txt`（`atom_04_can` 聚合行与 `add_subdirectory` 已就位）；
+- `Atoms/ATOM-04_CAN/CMakeLists.txt`（目标名、别名、PublicHeaders 链接、`Src/*.cpp` GLOB 已就位）；
+- 其余 18 个 ATOM 的私有实现；`AppCoordinator`；
+- `Design/**`（只读）；`Rule/ConfigSchema.md`；`Config/dart_control.json`。
+
+### 9.2 接口冻结结论
+
+- 传输端口 `ICanTransport`：`open/close/receive/send/busStatus`，全部 `noexcept`，错误经 `CanIoResult` 表达；
+- 反馈投递端口 `ICanFrameSink`：只投递**原始帧**，无字段语义；
+- 节点状态：`UNKNOWN/ONLINE/TIMEOUT/FAULT`，`FAULT` 为终态，静默不得改写；
+- 超时判定：`timing.can_comm_timeout_ms`（实际配置 200 ms）；
+- 零力矩：`0x200` + `0x1FF` 各 8 字节全零，按 `timing.zero_torque_send_period_ms`（20 ms）开环连发。
+
+### 9.3 槽位映射（编译期固化）
+
+```text
+0x200 slot0..3 -> 0x201, 0x202, 0x203, 0x204   (电机 1..4)
+0x1FF slot0..1 -> 0x205, 0x206                  (电机 5 YAW、6 变力)
+0x1FF slot2..3 -> 未使用，恒 0x0000
+```
+
+该映射由 `CanTypes.hpp` 的 `queryMotorSlot()` + `static_assert` 在编译期校验。
+
+## 10. 静态与形式化验证结果
+
+- [x] 无 `main()`、无独立可执行目标（`.verify_atom04.sh` pass 5）。
+- [x] `Inc/` 内无任何 ATOM 私有头、无 `AppCoordinator.hpp`。
+- [x] `g++ -std=c++23 -Wall -Wextra -Wpedantic -Werror` 六源文件零告警。
+- [x] `aarch64-linux-gnu-g++` 以相同标准与告警等级 `-O2 -c` 全部六个源文件通过。
+- [x] SocketCAN 传输编译通过（`<linux/can.h>`）；公共头不泄漏该平台头。
+- [x] 大端序：`1000 -> 03 E8`、`-1 -> FF FF`、`-32768 -> 80 00`。
+- [x] 非法帧 ID（`0x123`、`0x201`）编码被拒且不修改输出对象。
+- [x] 零力矩帧：先污染 payload 再构造，确认 8 字节全零。
+- [x] 反馈帧 `0x201` 判为控制帧失败（`isValidControlFrame == false`）。
+- [x] `0x201`~`0x206` 原样投递，未做任何字段解析；payload 逐字节保持不变。
+- [x] 未识别 ID（`0x300`）与未登记节点（`0x202`）返回 `UNKNOWN_ID` 且不投递。
+- [x] 超时边界：199.999 ms 不超时，恰好 200 ms 判 `TIMEOUT`。
+- [x] `FAULT` 不被超时检查改写；反馈恢复后回 `ONLINE` 且 `frame_count` 递增。
+- [x] 配置校验：`NOT_LOADED`、缺失键、取值不符、周期越界、未定义节点、重复 node、
+      重复 motor id 全部如实失败。
+- [x] 失败加载**不部分提交**：失败后既有 `CanRuntimeConfig` 保持不变。
+- [x] `shutdown()` 幂等 `noexcept`；`stop()` 对未启动状态安全；先 `close()` 唤醒再 `join()`。
+- [x] 生命周期适配器为独立翻译单元且 39 行（≤ 50），无业务逻辑。
+- [x] 依赖方向为 `ATOM -> Public`。
+- [ ] **未在目标 Ubuntu ARM 主机上做真实总线联调**（无硬件）；`ip link` 侧 bitrate=1000000
+      与采样点/SJW 由系统配置负责，不在 SocketCAN 运行期下发。
+
+## 11. 待接入点（不得当作已实现）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P-01 | `ICanSafetyNotifier` 到全机静默动作的实际接线（ATOM-14 归属） | 仅声明；`AtomIntegration.md` §11 第 7 条端口未落地 |
+| P-02 | `ICanEventSink` 到诊断/生命周期事件流（ATOM-18）的桥接 | 仅声明；`AtomIntegration.md` §11 第 4 条 |
+| P-03 | 电机反馈字段布局、单位与 C620 错误码映射 | 归 ATOM-05；ATOM-04 按裁决不实现 |
+| P-04 | 电机控制帧电流值的实际提交方（ATOM-05 PID 输出） | `CanCore::latchMotorCurrents()` 已就绪（锁存后由发送线程按周期发出），等待调用方 |
+| P-05 | 总线错误帧的细粒度分类（`CAN_RAW_ERR_FILTER` 未启用） | `DISCARD` 语义下只区分 `BUS_OFF`/`BUS_ERROR`，不做错误帧字段解析 |
+
+## 12. 偏差登记
+
+| 项 | 设计/配置 | 实现 | 理由 |
+|---|---|---|---|
+| 接口名 | `Design/Config.md` §6.1、`dart_control.json` 写 `"CAN0"` | `"can0"` | 用户裁决；Linux 接口名区分大小写 |
+| 槽位来源 | `ConfigSchema` 定义 `can.frames[].fields[].slot` | `Design/Config.md` §6.2 固定映射常量 | `dart_control.json` 无 `can.frames[]`；用户裁决"新增声明即可"，未新增配置键 |
+| `timing.can_comm_timeout_ms` | `dart_control.json` 存在该键 | 作为必需键读取 | 但 `Rule/ConfigSchema.md` §2.3 的 timing 表中尚未登记该键名，属文档登记缺口（不擅自修改 Rule 文档） |
+
+## 13. 残余风险
+
+1. 未在真实 CAN 总线上验证 BUS_OFF 的 `errno` 取值；映射表按 Linux 常见取值实现，
+   未知 `errno` 一律归入 `BUS_ERROR` 并保留 `errno` 供诊断。
+2. `0x1FF` 的 RTR/远程帧语义未在真实电调上确认；当前按数据帧处理。
+3. 上层 `NewVersion/CMakeLists.txt` 引用了不存在的 `marsland_app` 目标，会阻塞整树
+   `cmake` 配置；本模块已在 aarch64 下独立编译通过，但整树构建需上层修复后方可验证。
+
+---
+
+## 14. 代码评审与缺陷修复（2026-10-12）
+
+评审方式：严格告警扫描（`-Wshadow -Wconversion -Wsign-conversion -Wuseless-cast
+-Wformat=2 -Wold-style-cast -Wcast-qual -Wswitch-enum -Wunused-const-variable=2`）、
+ASan+UBSan 全量测试、以及针对发送/超时路径的定向代码走查。脚本：`.review_atom04.sh`。
+
+| ID | 严重度 | 缺陷 | 影响 | 修复 |
+|---|---|---|---|---|
+| D1 | 低 | `kConfiguredInterfaceName` 仅声明、无任何引用（死常量） | 误导读者以为查了 `CAN0` | 删除常量，偏差改由注释与接入文档 §10 记录 |
+| D2 | **高** | 节点超时检查只在 `receive() == RECEIVE_TIMEOUT` 分支执行 | **持续帧流会把 200 ms 离线判定彻底饿死**：节点静默后永不判离线 | `pollTimeouts()` 提升为每个循环周期无条件执行 |
+| D3 | **严重** | `transmitLoop` 每周期无条件发送零力矩帧，控制帧周期内不发任何内容 | **每个周期用 8 字节全零覆盖调用方的控制量，电机永远无法出力**（等于零力矩常闭） | 控制帧改为"锁存 + 周期发送已锁存值"（初值全零）；新增 `latchMotorCurrents()` / `latchedCurrents()` / `forceZeroCurrents()` / `flushLatchedFrames()`；取消立即发送语义的 `sendMotorCurrents()` |
+| D4 | 中 | `LinuxSocketCanTransport` 的 `unknown_id_count_` 从不自增（恒 0），却被写入 `busStatus()` | 调用方读到"未识别 ID 数为 0"的假信息 | 传输层删除该字段；由内核投递层统一维护并在 `snapshotBusStatus()` 合并 |
+| D5 | 中 | 超时判定用 `last_frame_time_us == 0` 表示"从未收到" | 单调时钟起点附近的**真实帧**会被误判已超时 | `CanNodeStatus` 新增显式 `has_received`；判定改为 `has_received && 超时` |
+| D6 | 低 | `int * 1000ULL` 触发 `-Wsign-conversion`；`receiveLoop` 中 `timeout` 为死变量 | 告警噪声；死代码 | 先转 `uint64_t` 再相乘；删除死变量 |
+| D7 | 中 | 持续总线错误/接收失败路径每轮都发布事件且无退避 | 故障时事件风暴 + RX 线程空转占满 CPU | 总线错误按"错误码变化或出现次数为 2 的幂、上限 64"节流；失败路径加 5 ms 退避。节点状态跃变为边沿事件，**不节流**（避免丢真实跃变） |
+| D8 | 低 | `can_core.hpp` 未包含 `<string>` 却声明 `std::string&`；`<vector>` 未使用 | 头文件不自足 | 补 `<string>`、删 `<vector>` |
+
+### 14.1 修复后验证
+
+- 严格告警：6 个源文件 **零输出**（缺陷数 0）。
+- `-Wall -Wextra -Wpedantic -Werror`：6/6 通过；`aarch64-linux-gnu-g++ -O2 -c`：6/6 通过。
+- ASan + UBSan 全量测试：**ALL CHECKS PASSED**，无内存/未定义行为报错。
+- TSan 无法在 WSL 下运行（`unexpected memory mapping`，环境的 ASLR 限制），
+  已用 ASan/UBSan 与互斥锁审查替代；**不得记为"线程检测已通过"**。
+- 测试断言数：115（新增 CanCore 锁存/发送、D5 时钟起点、失败路径确定性检查）。
+
+### 14.2 新增回归测试
+
+- `testCoreLatchAndTransmit`：用记录型传输替身验证发送线程确实发出**非零载荷**的
+  `0x200` 帧（`03 E8` = 1000）、非法 ID 不可锁存、`forceZeroCurrents()` 后回到全零、
+  零力矩发送失败产生**恰好 2 条** `ZERO_TORQUE_FAILED` 事件、`stop()` 幂等。
+- `testDispatchAndNodeStates` 扩展：`timestamp_us == 0` 的真实帧不得被判超时；
+  从未收到反馈的节点保持 `UNKNOWN` 且不被超时轮询处理。

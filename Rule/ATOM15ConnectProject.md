@@ -218,15 +218,16 @@ context.configuration_path = "./Config/dart_control.json";
 
 程序工作目录应为 `NewVersion`，或由部署脚本保证该相对路径指向同一配置文件。
 
-当前初始文件只包含设计中已确定的 1～4 号电机：
+当前初始文件包含设计中已确定的 6 个电机：
 
-- 1、2：蓄力机构，`0x201`、`0x202`；
-- 3：YAW 机构，`0x203`；
-- 4：变力机构，`0x204`。
+- 1：右蓄力机构，`0x201`；
+- 2：左蓄力机构，`0x202`；
+- 3：右换弹机构（M3508），`0x203`；
+- 4：左换弹机构（M3508），`0x204`；
+- 5：YAW 机构，`0x205`；
+- 6：变力机构，`0x206`。
 
-换弹左右两台 M3508 的电机标识和 CAN 节点在 `Design/Config.md` 中仍为 `[待定]`，初始文件不臆造这些值。因此换弹相关功能正式启用前，必须先同步修订：
-
-1. `Design/Config.md`；
+所有电机的 CAN 节点已明确，初始文件完整包含这些映射。
 2. `Rule/ConfigSchema.md`；
 3. `Rule/ConfigSchema.schema.json`；
 4. `Config/dart_control.json`；

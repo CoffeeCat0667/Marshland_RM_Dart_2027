@@ -1,94 +1,144 @@
-﻿# ATOM-05 Motor PID 实现方案（初版）
+# ATOM-05_Motor_PID 工作方案（2026-10-13 更新）
 
-## 1. 目标与边界
+## 1. 文档基线与工作边界
 
-- 实现电机映射、命令校验、CAN 反馈解析、编码器状态判断、PID 参数管理和单电机 PID 闭环更新。
-- 按电机 ID 独立维护命令、反馈快照、PID 配置、运行状态和故障状态。
-- 不实现自动发射流程，不提供 `main` 入口；本模块作为上层 Marshland 工程的可复用组件被调用。
-- 所有普通电机命令先经过 ATOM-02 与 ATOM-14 的安全约束；PID 修改仅允许 WEB 控制源且系统处于手动或调试模式。
+### 已确认的最新设计基线
 
-## 2. 预期目录结构
+- ATOM-05 设计文档同步基线：`PRD 0.10`、`PEF 1.5`、`Interface 1.5`、`Config 0.8`，日期为 `2026-10-10`。
+- ATOM-05 的产品职责是为 Config 映射的电机提供命令、反馈、编码器转速和 PID 闭环能力，但不决定自动发射流程步骤。
+- 当前映射：
+  - 蓄力电机 1（右）：CAN node `0x201`
+  - 蓄力电机 2（左）：CAN node `0x202`
+  - 换弹电机 3（右）：CAN node `0x203`
+  - 换弹电机 4（左）：CAN node `0x204`
+  - YAW 电机 5：CAN node `0x205`
+  - 变力电机 6：CAN node `0x206`
+- 换弹两侧使用速度 PID 和 CAN 反馈；不新增换弹位置控制、回零或限位判定。
+- PID 修改只能来自 `WEB`，且系统模式只能是 `MANUAL` 或 `DEBUG`。
+- PID 参数热加载和持久化必须分别报告结果；持久化失败不得报告为成功。
+- 单电机反馈异常不得伪装成有效编码器读数。
+- 换弹正常到位的零转速是有效速度 PID 目标，不等同于零力矩；手动停止、急停或联动故障时必须撤销速度目标并优先输出零力矩。
 
-```text
-ATOM-05_Motor_PID/
-├── CMakeLists.txt
-├── PLAN.md
-├── Inc/
-│   └── ... 公共头文件
-└── Src/
-    └── ... 实现文件
-```
+### 本目录的实际职责
 
-头文件只放在 `Inc`，实现只放在 `Src`。当前阶段先完成模块 CMake 骨架和方案文档，后续根据 Public 接口实际定义补齐源文件。
+最新工作规则明确规定：本工程只负责网关和各模块组装，禁止实现 `Design/Atomic` 中描述的任何 Atomic 功能。因此，本目录的计划仅覆盖：
 
-## 3. 建议模块划分
+- ATOM-05 模块目标的 CMake 组织与上层组装。
+- 未来外部实现接入时所需的公共契约、依赖方向和生命周期注册边界。
+- 对公共接口缺口的记录与上游协调项。
 
-1. **MotorMapping / MotorRegistry**
-   - 保存 Config 当前电机映射：蓄力电机 1、2，变力电机 4，YAW 电机 3，以及换弹左右两个 M3508；后两者 ID/节点/PID 仍待配置确认，不臆造映射。
-   - 统一按电机 ID 查找、校验和管理电机通道。
-2. **MotorCommandValidator**
-   - 校验控制模式、目标值、限幅、系统安全状态及命令来源。
-   - 拒绝未授权或不满足安全前置条件的命令。
-3. **MotorFeedbackDecoder**
-   - 从 CAN 反馈提取有符号转速、方向、有效性和时间戳。
-   - 将异常帧、无效编码器数据与超时状态明确区分，禁止伪装成有效读数。
-4. **PidConfigService**
-   - 读取并校验 `PIDConfig`。
-   - 仅在 WEB + 手动/调试条件下接受修改；通过校验后立即热加载，并分别报告热加载结果和持久化结果。
-5. **MotorPidController**
-   - 执行单次 PID 更新和按 Config 周期调度。
-   - 检测 NaN/无穷输出、连续 5 个周期输出饱和且误差未减小等故障条件。
-   - 故障时输出零力矩、禁用对应闭环，并向故障管理器报告。
-6. **MotorChannelState**
-   - 保存启用、禁用、停止、反馈有效性、超时、故障及最近控制量等状态。
-   - 提供单电机反馈快照查询。
+本目录不得新增电机控制器、CAN 解码器、PID 算法、命令仲裁、持久化实现或 `main` 入口。不能把 ATOM-05 设计文档中的功能直接落地为本目录源码。
 
-## 4. 核心接口方向
+## 2. 已阅读的公共代码与结论
 
-- `configureMapping(...)`：加载并校验电机映射。
-- `submitCommand(motor_id, command, safety_context)`：提交单电机命令。
-- `updateFeedback(motor_id, can_feedback, timestamp)`：更新 CAN 反馈。
-- `feedbackSnapshot(motor_id)`：查询反馈快照。
-- `readPidConfig(motor_id)` / `requestPidUpdate(...)`：读取和受控更新 PID 参数。
-- `enable(motor_id)`、`disable(motor_id)`、`stop(motor_id)`：管理单个闭环通道。
-- `updateOnce(motor_id, dt)`：执行一次 PID 更新并返回控制量。
-- `tick(timestamp)`：按 Config 周期调度各电机 PID 更新。
-- `faultStatus(motor_id)`：查询故障及安全处置结果。
+### PublicHeaders 叶子契约
 
-具体类型和依赖必须优先复用 `Public` 中已有接口；如果接口信息不足，先补充调查，不直接臆造跨模块协议。
+`Atoms/Public/Headers/CMakeLists.txt` 定义 `Marshland::PublicHeaders`，只包含纯公共类型和接口：
 
-## 5. 数据与安全约束
+- `MarshlandTypes.hpp`：`SystemMode`、`ControlSource`、`FaultSeverity` 等共享枚举。
+- `StateArbitrationTypes.hpp`：`ExternalInputs`、`ArbitrationContext`、控制意图、授权结果和状态事件。
+- `ILifecycle.hpp`：`RuntimeContext`、`RuntimeStep`、`ILifecycleModule`、模块初始化结果。
+- `IConfigView.hpp`：只读配置查询契约。
+- `IMonotonicClock.hpp`：单调时钟接口。
+- `AppInterfaces.hpp`：装配桥的窄端口接口。
+- `SbusTypes.hpp`、`SbusInterfaces.hpp`：SBUS 公共契约。
 
-- 所有状态按电机 ID 隔离，不能用一个电机的反馈或 PID 参数覆盖另一个电机。
-- 反馈处理保留有符号转速和方向信息；反馈无效或超时不得参与闭环控制。
-- PID 更新请求按“来源、系统模式、参数范围、热加载结果、持久化结果”逐项记录。
-- 持久化失败时只能报告失败，不能报告为已保存。
-- PID 故障必须触发零力矩、停用对应闭环，并向故障管理器报告。
-- 换弹一侧反馈/PID/命令故障联动两侧零力矩，由 ATOM-10 取消动作/计时；正常到位的 0 rpm 速度 PID 保持不等同于零力矩。安全覆盖后旧 PID 输出不得重新覆盖零力矩目标。
-- 模块不得自行决定自动发射流程；只提供电机控制与反馈能力。
+ATOM-05 只能依赖这些公共契约，不能包含 `Atoms/Public/AppCoordinator/` 下的实现桥头文件。
 
-## 6. CMake 集成方案
+### 配置读取边界
 
-- 本目录已提供 `atom_05_motor_pid` 和 `Marshland::atom_05_motor_pid`，当前无源码时为 INTERFACE 占位目标。
-- 上层工程通过 `add_subdirectory(Atoms/ATOM-05_Motor_PID)` 后链接该目标；编译器、目标平台、警告和构建类型均由上层工程统一决定。
-- 实现文件建立后，将目标调整为实际编译目标，并继续公开 `Inc` 目录；不在本模块覆盖上层编译选项。
+`IConfigView` 的约束已经足以确定装配方向：
 
-## 7. 实现顺序与验证
+- 查询接口全部为 `const`、`noexcept`，不能在调用期间执行 I/O。
+- 配置加载状态必须通过 `ConfigStatus` 显式表达，不能以默认值掩盖 `NOT_LOADED`、`MISSING`、`INVALID_TYPE` 或 `OUT_OF_RANGE`。
+- `configVersion()` 单调递增，消费者可据此发现热加载。
+- 该接口没有写入方法；运行时 PID 更新和 JSON 持久化不应在本目录通过自定义写接口实现。
 
-1. 调查 `Public` 中的公共类型、CAN 接口、Config、故障管理和安全上下文接口。
-2. 固化电机映射和状态模型，先实现命令及反馈路径。
-3. 实现 PID 参数校验、权限判断、热加载与持久化结果分离。
-4. 实现单次 PID、周期调度、数值异常和连续饱和检测。
-5. 接入故障安全处置及查询接口。
-6. 在上层 ARM 构建链下验证 CMake 集成；补充单元测试或可测试的纯逻辑接口。
-7. 验证验收条件：按电机 ID 独立管理、保留方向、WEB 权限生效、PID 立即生效、持久化结果真实报告、故障时安全停机。
+### 生命周期与装配边界
 
-## 8. 当前未决项
+`ILifecycle.hpp` 已提供启动步骤 `LoadPidParameters` 和 `InitializeMotorAndEncoderChannels`。因此未来 ATOM-05 适配器若由上层接入，应作为生命周期模块注册，由 RuntimeCoordinator 按既定步骤调用，而不是自行创建线程入口或绕过 RuntimeCoordinator。
 
-- `Public` 中现有公共头文件和类型名称尚未调查。
-- CAN 帧格式、反馈超时阈值、PID 参数边界、Config 周期和持久化接口需要以现有公共接口及配置定义为准。
-- ATOM-02、ATOM-14 和故障管理器的具体调用协议需要在实现前确认。
+`AppCoordinator` 是唯一允许同时连接 RuntimeCoordinator 与 StateArbitrator 的装配桥。ATOM-05 不得依赖 `AppCoordinator.hpp`，也不应直接操作 StateArbitrator；需要状态信息时只能通过公共窄接口和上层注入完成。
 
-## 9. 2026-10-10 文档同步
+`StateArbitrationTypes.hpp` 提供的相关状态信息包括：
 
-本轮仅对齐 PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8 的电机映射和双 M3508 联动边界，未实施模块代码。输入/仲裁/安全依赖通过确认后的窄端口或装配回调接入，不注入具体 AppCoordinator/StateArbitrator 引用。
+- 系统模式：`MANUAL`、`DEBUG`、`AUTO_FIRE`、`SOFTWARE_ESTOP`、`FAULT` 等。
+- 控制源：`SBUS`、`WEB`、`AUTO`，且公共类型定义了优先级关系。
+- 安全状态：故障、软件急停、控制权和意图判定结果。
+- 单调时间戳：所有超时和控制周期不得依赖墙上时钟。
+
+这些类型只描述跨模块契约，不授权本目录实现 ATOM-05 的业务逻辑。
+
+## 3. CMake 与依赖方案
+
+当前目录的 `CMakeLists.txt` 已符合模块模板要求：
+
+- 不定义 `project()`，由上层工程统一管理。
+- 不产生可执行文件，不定义 `main()`。
+- 不设置编译器、目标平台、C++ 标准或编译选项。
+- 无 `Src/` 源码时使用 `INTERFACE` 目标；以后若有允许接入的模块适配源码，由模板自动切换为 `STATIC`。
+- 目标名为 `atom_05_motor_pid`，并提供 `Marshland::atom_05_motor_pid` 别名。
+- 公开包含目录包含本目录、`Inc/`（若存在）和同级 `Public`。
+- 若 `Marshland::PublicHeaders` 已由上层先创建，可通过目标依赖接入；不得自行复制公共类型。
+
+上层工程的组装顺序为：
+
+1. `Atoms/Public/Headers`
+2. `Atoms/`
+3. `Atoms/Public`，其中包含 `AppCoordinator` 和 `marshland_public`
+
+上层还强制 Ubuntu ARM 架构和 C++23，并禁止使用 x86 编译链。任何后续构建必须使用 WSL ARM 交叉工具链或目标 Ubuntu ARM 主机，并遵守增量编译要求。
+
+## 4. 允许的后续装配工作
+
+在获得明确授权且不触碰 Atomic 功能实现红线的前提下，只考虑以下工作：
+
+1. 检查 ATOM-05 目标是否被 `Atoms/CMakeLists.txt` 纳入 `marshland_atoms` 聚合目标。
+2. 为外部提供的、已经符合架构边界的 ATOM-05 适配目标补充 CMake 链接关系。
+3. 确认适配器只依赖 `Marshland::PublicHeaders` 和明确注入的窄接口。
+4. 确认生命周期注册信息能被 RuntimeCoordinator 查询，且启动步骤顺序与 `ILifecycle.hpp` 一致。
+5. 使用 ARM 工具链进行增量构建和公共契约编译检查。
+6. 仅在上层设计明确提供公共接口后，更新本计划中的接口依赖记录；不在本目录臆造 CAN、PID 或 JSON 写入协议。
+
+## 5. 禁止事项
+
+- 禁止在本目录实现 ATOM-05 设计文档中的任何电机、编码器、CAN、PID、故障处置或控制权限功能。
+- 禁止新增 `main`、独立可执行文件或绕过上层 RuntimeCoordinator 的启动线程。
+- 禁止包含或链接 `AppCoordinator.hpp` 作为普通 ATOM 的实现依赖。
+- 禁止直接修改 `Atoms/Public`、上层 `CMakeLists.txt` 或 `Design` 文档以弥补本目录缺口。
+- 禁止用本目录自定义类型替代 `Marshland::PublicHeaders` 中已有公共类型。
+- 禁止使用 x86 编译链或进行全量重编译。
+
+## 6. 当前未决项与需要上游提供的内容
+
+公共代码目前没有提供 ATOM-05 专用的 CAN、MotorCommand、MotorFeedback、PIDConfig、故障上报或持久化写入接口。因此无法仅凭现有 `Public` 代码确定合法的 ATOM-05 接入 API。
+
+需要上游设计或公共契约明确：
+
+- CAN 发送/接收适配器的所有权、线程模型和反馈帧结构。
+- `MotorCommand`、电机状态快照和 PID 参数的数据结构。
+- 反馈超时阈值、PID 周期、输出限幅及“连续 5 周期饱和且误差未减小”的检测数据来源。
+- PID 更新请求如何携带 `ControlSource`、`SystemMode` 和请求结果。
+- 热加载成功与 JSON 持久化成功的独立报告通道。
+- 单侧换弹故障联动另一侧零力矩，以及由 ATOM-10 取消动作/计时的窄接口。
+- 故障管理器的公共上报接口。
+- ATOM-05 生命周期模块的注册位置和依赖注入方式。
+
+在这些契约出现之前，不应创建 `Inc/`、`Src/` 中的功能实现文件，也不应将设计文档中的原子操作转写成代码。
+
+## 7. 验证计划
+
+当前仅验证模块装配配置，不验证 ATOM-05 功能实现：
+
+1. 检查本目录目标可被上层 `add_subdirectory` 处理，并能作为 `Marshland::atom_05_motor_pid` 参与聚合。
+2. 使用 Ubuntu ARM 或 WSL ARM 交叉工具链进行增量 configure/build。
+3. 在启用 `MARSHLAND_BUILD_TESTS` 时运行公共契约编译检查；测试执行使用 ARM 主机或 `qemu-aarch64`。
+4. 确认本目录没有 `main`、没有独立可执行目标、没有 AppCoordinator 依赖。
+5. 对任何未来适配接入，优先验证依赖方向、生命周期注册和失败闭环，而不是在本目录验证 Atomic 业务行为。
+
+## 8. 本轮更新记录
+
+- 更新日期：2026-10-13。
+- 阅读并对齐：当前工作目录 `AGENTS.md`、ATOM-05 最新设计文档、上层 `CMakeLists.txt`、`Atoms/Public` 全部现有公共代码与其 CMake 文件。
+- 主要修正：将原先“实现电机/PID 功能”的计划改为“仅做模块装配和公共契约接入”的计划，以符合最新 AGENTS 的工程职责限制。
+- 未修改任何公共代码、上层工程文件或设计文档。

@@ -6,18 +6,18 @@
 - 维护约定：只登记未完成事项；已修复事项从未修复列表移除，并在版本记录中保留摘要。
 - 本文件只记录 ATOM-03 归属的问题。ATOM-15 配置解析/校验问题另见 `Atoms/ATOM-15_Config_Persistence/BugLists.md`。
 
-## 1. 未修复缺陷
+## 1. 已修复缺陷
 
 | 编号 | 标题 | 严重度 | 状态 |
 |---|---|---|---|
-| ATOM03-BUG-001 | SBUS 快照未接入公共输入、仲裁和安全端口 | P1 | 未修复 |
-| ATOM03-BUG-002 | `receive_period_ms` 未参与读取调度，UART 轮询超时固定为 100 ms | P1 | 未修复 |
-| ATOM03-BUG-003 | UART `read() == false` 后无退避/错误状态，设备异常时可能空转 | P1 | 未修复 |
-| ATOM03-BUG-004 | `frame_bytes` 消费契约未强制为 25，配置通过后可能导致所有帧被拒绝 | P1 | 未修复 |
+| ATOM03-BUG-001 | SBUS 快照未接入公共输入、仲裁和安全端口 | P1 | 代码侧已修复，装配接入待确认 |
+| ATOM03-BUG-002 | `receive_period_ms` 未参与读取调度，UART 轮询超时固定为 100 ms | P1 | 已修复 |
+| ATOM03-BUG-003 | UART `read() == false` 后无退避/错误状态，设备异常时可能空转 | P1 | 已修复 |
+| ATOM03-BUG-004 | `frame_bytes` 消费契约不闭合 | P1 | 已修复 |
 
 ## 2. 缺陷详述
 
-### ATOM03-BUG-001：SBUS 控制链未接通
+### ATOM03-BUG-001：SBUS 控制链未接通（代码侧已修复，装配接入待确认）
 
 **位置**：
 
@@ -26,16 +26,14 @@
 - `Inc/atom03_SBUS/lifecycle_adapter.hpp`
 - `Entry.cpp` 的对象装配
 
-**现状**：
+**修复后状态**：
 
-`SbusCore` 只写入 `SbusChannelStore`，生命周期适配器只注入 `SbusCore` 和 `IConfigView`。当前没有注入或调用：
+`SbusCore` 已增加可选的公共窄端口注入：
 
-- `IInputReporter` / `AppCoordinator::ReportSbus()`；
-- `ReportSoftwareEstop()`；
-- `IControlAuthority::SubmitIntent()`；
-- ATOM-14 的安全请求端口。
+- `IInputReporter`：上报 SBUS 在线、AUTO 模式和软件急停输入；
+- `IControlAuthority`：提交控制意图、SBUS 接管终止请求和经授权的发射意图。
 
-因此有效 SBUS 帧虽然可以更新快照，但不会改变系统控制源、不会上报在线/失联、不会触发急停，也不会产生普通控制或发射请求。该行为不满足 `Design/Atomic/ATOM-03_SBUS.md` 的控制意图与安全入口要求。
+有效帧发布快照后调用这些端口，失联发布 `online=false`。但当前端口指针仍允许为空，以保持既有装配兼容；必须由上层对象装配将 `AppCoordinator` 分别以 `IInputReporter` 和 `IControlAuthority` 注入，才能在运行时真正接通控制链。
 
 **修复要求**：
 
@@ -62,7 +60,7 @@
 - `Src/sbus_core.cpp`：读取线程没有使用 `SbusConfig::receive_period_ms`；
 - `Src/linux_sbus_byte_stream.cpp`：`kReadTimeoutMs` 固定为 100 ms，并直接传给 `poll()`。
 
-**现状**：配置值可以成功加载，但不影响 UART 读取行为。`poll()` 的超时是固定 100 ms，和配置的 SBUS 接收周期没有关系。
+**修复后状态**：`receive_period_ms` 写入 `SbusSerialParameters::read_timeout_ms`，Linux UART 后端使用该值作为 `poll()` 超时；设备错误重试也使用该值作为可打断退避周期，已删除固定 100 ms 轮询常量。
 
 **修复要求**：
 
@@ -86,7 +84,7 @@
 - `Src/linux_sbus_byte_stream.cpp:147-170`；
 - `Public/SbusInterfaces.hpp` 的 `IUartByteStream::read()` 返回契约。
 
-**现状**：`read()` 返回 `false` 后，SbusCore 只更新 offline 状态并立即进入下一次循环。Linux 后端在 `POLLERR`、`POLLHUP`、`POLLNVAL`、不可恢复 `read()` 错误时返回 `false`。如果 `running_` 仍为 true，线程会连续失败、连续加锁并持续占用 CPU。
+**修复后状态**：`IUartByteStream::read()` 返回 `UartReadStatus`，区分数据、超时、取消、临时错误和设备错误。设备错误和临时错误进入可由 `cancel()` 打断的条件变量退避，取消直接退出读取线程。
 
 **修复要求**：
 
@@ -111,7 +109,7 @@
 - `Src/sbus_core.cpp:136` 始终以固定 25 字节调用解码器；
 - `Src/sbus_decoder.cpp:8` 要求 `size == config_.frame_bytes`。
 
-**现状**：ATOM-15 当前允许 `frame_bytes` 在 1～4096 范围内通过校验，但 SBUS 协议固定为 25 字节。只要配置不是 25，模块可以完成初始化，却会拒绝所有帧。
+**修复后状态**：核心帧缓冲区、环形缓冲区和解码器均使用 `SbusConfig::frame_bytes`；解码器只检查配置长度和通道数据所需的最小长度，不再由核心固定传入 25 字节。中心值、有效最小值和有效最大值也统一用于解码及 CH5/CH6/CH7/CH12 计算。
 
 **修复要求**：
 
@@ -128,3 +126,4 @@ CH12 已在 `Design/Atomic/ATOM-03_SBUS.md` 修订为变力机构速度：364=-2
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | 1.0 | 2026-10-13 | 首次登记控制链未接通、读取周期未生效、UART 失败空转和固定帧长度契约不闭合。 |
+| 1.1 | 2026-10-13 | 完成代码侧控制端口、读取状态、可打断退避、读取超时配置和配置驱动帧长度；BUG-001 仍需上层装配传入公共端口后才能闭合。 |

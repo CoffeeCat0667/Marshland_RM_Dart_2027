@@ -66,8 +66,12 @@
 
 ```jsonc
 "motor": [
-  { "id": 1, "node": "0x201", "bus": "can0", "role": "charge", "target_unit": "rpm" },
-  { "id": 3, "node": "0x203", "bus": "can0", "role": "yaw",    "target_unit": "rpm" }
+  { "id": 1, "node": "0x201", "bus": "can0", "role": "charge_right", "target_unit": "rpm" },
+  { "id": 2, "node": "0x202", "bus": "can0", "role": "charge_left",  "target_unit": "rpm" },
+  { "id": 3, "node": "0x203", "bus": "can0", "role": "reload_right", "target_unit": "rpm" },
+  { "id": 4, "node": "0x204", "bus": "can0", "role": "reload_left",  "target_unit": "rpm" },
+  { "id": 5, "node": "0x205", "bus": "can0", "role": "yaw",          "target_unit": "rpm" },
+  { "id": 6, "node": "0x206", "bus": "can0", "role": "force",        "target_unit": "rpm" }
 ]
 ```
 
@@ -722,10 +726,14 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
   "mode":       { "enabled": { "...": true }, "initial": { "system_mode": "UNINITIALIZED" } },
   "timing":     { "max_control_cycle_ms": 100, "charge_time_s": 30, "...": "..." },
   "motor": [
-    { "id": 1, "role": "charge", "bus": "CAN0", "node": "0x201",
+    { "id": 1, "role": "charge_right", "bus": "CAN0", "node": "0x201",
       "pid": { "kp": 3, "ki": 0, "kd": 0, "integral_limit": 16000,
                "output_limit": 16000, "control_period_ms": 20, "enabled": true } },
-    { "id": 3, "role": "yaw", "bus": "CAN0", "node": "0x203", "pid": { "...": "..." } }
+    { "id": 2, "role": "charge_left", "bus": "CAN0", "node": "0x202", "pid": { "...": "..." } },
+    { "id": 3, "role": "reload_right", "bus": "CAN0", "node": "0x203", "pid": { "...": "..." } },
+    { "id": 4, "role": "reload_left", "bus": "CAN0", "node": "0x204", "pid": { "...": "..." } },
+    { "id": 5, "role": "yaw", "bus": "CAN0", "node": "0x205", "pid": { "...": "..." } },
+    { "id": 6, "role": "force", "bus": "CAN0", "node": "0x206", "pid": { "...": "..." } }
   ],
   "can":        { "interface": "CAN0", "bitrate": "1Mbps", "frames": [ "..." ] },
   "sbus":       { "serial_device": "/dev/ttyS10", "functions": [ "..." ] },

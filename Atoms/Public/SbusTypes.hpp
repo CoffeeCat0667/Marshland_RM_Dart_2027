@@ -12,14 +12,12 @@ namespace marshland::sbus {
 
 struct SbusSerialParameters final {
     std::string serial_device;
+    std::uint32_t read_timeout_ms{0};
 };
 
 inline constexpr std::size_t kChannelCount = 16;
-inline constexpr std::size_t kFrameBytes = 25;
-inline constexpr std::uint16_t kChannelCenter = 1024;
-inline constexpr std::uint16_t kChannelHalfRange = 660;
-inline constexpr std::uint16_t kChannelMinimum = 364;
-inline constexpr std::uint16_t kChannelMaximum = 1684;
+inline constexpr std::size_t kChannelPayloadBytes = 22;
+inline constexpr std::size_t kMinimumDecodeFrameBytes = kChannelPayloadBytes + 1U;
 inline constexpr std::uint8_t kFireConfirmationFrames = 20;
 inline constexpr std::int32_t kForceSpeedLimitRpm = 2000;
 
