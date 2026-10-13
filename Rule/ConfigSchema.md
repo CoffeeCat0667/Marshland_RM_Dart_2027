@@ -197,8 +197,8 @@
 | `timing.websocket_push_period_ms` | int | ms | WebSocket 推送周期 |
 | `timing.estop_response_max_ms` | int | ms | 软件急停响应上限 |
 | `timing.zero_torque_send_period_ms` | int | ms | 零力矩发送周期 |
-| `timing.reload_lift_settle_ms` | int | ms | 换弹抬起到位判定延时（500） |
-| `timing.reload_lower_settle_ms` | int | ms | 换弹放下到位判定延时（500） |
+| `timing.reload_lift_run_s` | int | s | 换弹抬起**运行时间**（3）。左右电机抬起转速目标均成功提交后计时；到期将两台目标转速设为 0，均成功提交后判定抬起到位 |
+| `timing.reload_lower_run_s` | int | s | 换弹放下**运行时间**（3）。判据同上 |
 | `timing.feed_angle2_hold_ms` | int | ms | 供弹角度二保持时间（100） |
 | `timing.feed_to_reload_lower_delay_s` | int | s | 供弹后换弹放下等待时间（2） |
 | `timing.fire_angle_hold_ms` | int | ms | 发射角度保持时间（100） |
@@ -206,7 +206,6 @@
 | `timing.charge_time_s` | int | s | 蓄力时间 X（30） |
 | `timing.charge_max_action_ms` | int | ms | 蓄力最大动作时间 |
 | `timing.force_time_s` | int | s | 变力时间 X（30） |
-| `timing.reload_max_action_ms` | int | ms | 换弹机构最大动作时间 |
 | `timing.feed_max_action_ms` | int | ms | 供弹机构最大动作时间 |
 | `timing.force_max_action_ms` | int | ms | 变力机构最大动作时间 |
 | `timing.yaw_adjust_max_action_ms` | int | ms | YAW 调整最大动作时间（2000） |
@@ -395,11 +394,9 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 |---|---|---|---|
 | `sbus.receiver` | str | — | 接收设备，`ET16S` |
 | `sbus.protocol` | str | — | 输入协议，`SBUS` |
-| `sbus.serial_device` | str | — | 串口设备，`UART10` |
+| `sbus.serial_device` | str | — | 实际串口设备路径，例如 `/dev/ttyS10`；设备名由 `RuntimeContext` 传入 |
 | `sbus.channel_count` | int | — | 通道总数（16） |
 | sbus.channel_scale_x | int | — | 连续通道统一缩放变量，范围 1～10；所有连续 SBUS 通道共用 |
-| `sbus.baudrate` | int | — | 波特率（100000） |
-| `sbus.serial_format` | str | — | 串口格式，`8E2` |
 | `sbus.inverted` | bool | — | 是否反相，`true`（已经过硬件反向电路） |
 | `sbus.receive_period_ms` | int | ms | 接收周期（20） |
 | `sbus.loss_timeout_ms` | int | ms | 失联判定时间（200） |
@@ -731,7 +728,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
     { "id": 3, "role": "yaw", "bus": "CAN0", "node": "0x203", "pid": { "...": "..." } }
   ],
   "can":        { "interface": "CAN0", "bitrate": "1Mbps", "frames": [ "..." ] },
-  "sbus":       { "serial_device": "UART10", "functions": [ "..." ] },
+  "sbus":       { "serial_device": "/dev/ttyS10", "functions": [ "..." ] },
   "gpio":       { "limit_switch": [ { "id": 1, "pin": null, "motor_id": 1 } ] },
   "servo":      { "pca9685": { "i2c_device": "/dev/i2c-7" }, "channels": [ "..." ] },
   "vision":     { "port": 10001, "target_field": "yaw_speed" },

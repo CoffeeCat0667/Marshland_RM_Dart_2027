@@ -117,6 +117,22 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
+# Shared contract headers
+#
+# Must be introduced BEFORE Atoms/: the 19 atom modules expose a shared
+# CMakeLists template that links Marshland::PublicHeaders behind
+# `if(TARGET Marshland::PublicHeaders)`. That condition can only be true if the
+# contract target already exists when each atom directory is processed —
+# otherwise the dependency never enters the CMake dependency graph and each
+# module silently relies on a hard-coded `../Public` include path instead.
+#
+# Atoms/Public/Headers/ contains ONLY the header-only interface target; the
+# top-level assembly layer (AppCoordinator) stays in Atoms/Public/ and is added
+# after Atoms because it links against marshland_atoms.
+# ---------------------------------------------------------------------------
+add_subdirectory(Atoms/Public/Headers)
+
+# ---------------------------------------------------------------------------
 # Module assembly
 #
 # Atoms/ holds the 19 ATOM modules listed in Design/Atoms.md. Every module
@@ -125,19 +141,16 @@ endif()
 #
 # This top-level project only assembles modules; it never implements atom
 # functionality (see AGENTS.md).
-#
-# Order matters: Atoms must come first so that marshland_atoms exists before
-# Atoms/Public/AppCoordinator links against it.
 # ---------------------------------------------------------------------------
 add_subdirectory(Atoms)
 
 # ---------------------------------------------------------------------------
-# Shared contracts and top-level assembly layer
+# Top-level assembly and aggregation
 #
-# Atoms/Public/ holds the cross-ATOM contract headers (MarshlandTypes.hpp,
-# ILifecycle.hpp) and the AppCoordinator bridge layer. The bridge is the only
-# place allowed to depend on both the runtime coordinator (hardware bring-up)
-# and the state arbitrator (business authority).
+# Atoms/Public/ holds the AppCoordinator bridge (the only place allowed to
+# depend on both the runtime coordinator and the state arbitrator) plus the
+# marshland_public aggregate target. It must come after Atoms/ so that
+# marshland_atoms already exists.
 # ---------------------------------------------------------------------------
 add_subdirectory(Atoms/Public)
 

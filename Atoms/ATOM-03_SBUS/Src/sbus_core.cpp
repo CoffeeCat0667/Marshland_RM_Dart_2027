@@ -6,6 +6,41 @@
 namespace marshland::atom03 {
 namespace {
 
+class ByteRingBuffer final {
+public:
+    static constexpr std::size_t kCapacity = 512U;
+
+    void push(const std::uint8_t* data, std::size_t size) noexcept
+    {
+        for (std::size_t i = 0; i < size; ++i) {
+            if (size_ == kCapacity) {
+                tail_ = (tail_ + 1U) % kCapacity;
+                --size_;
+            }
+            data_[head_] = data[i];
+            head_ = (head_ + 1U) % kCapacity;
+            ++size_;
+        }
+    }
+
+    bool pop(std::uint8_t& value) noexcept
+    {
+        if (size_ == 0U) {
+            return false;
+        }
+        value = data_[tail_];
+        tail_ = (tail_ + 1U) % kCapacity;
+        --size_;
+        return true;
+    }
+
+private:
+    std::array<std::uint8_t, kCapacity> data_{};
+    std::size_t head_{0};
+    std::size_t tail_{0};
+    std::size_t size_{0};
+};
+
 std::uint64_t monotonicNow(const marshland::app::IMonotonicClock& clock) noexcept
 {
     const auto value = clock.nowMicros();
@@ -34,6 +69,10 @@ bool SbusCore::start(const SbusConfig& config) noexcept
     }
     config_ = config;
     decoder_ = SbusDecoder(config_);
+    if (!uart_.configure(config_.serial)) {
+        running_.store(false);
+        return false;
+    }
     try {
         worker_ = std::thread(&SbusCore::run, this);
     } catch (const std::system_error&) {
@@ -61,12 +100,13 @@ marshland::sbus::SbusChannelSnapshot SbusCore::readSbusSnapshot() const noexcept
 
 void SbusCore::run() noexcept
 {
+    ByteRingBuffer ring;
+    std::array<std::uint8_t, 256U> input{};
     std::array<std::uint8_t, marshland::sbus::kFrameBytes> frame{};
     std::size_t frame_size = 0;
     while (running_.load()) {
-        std::uint8_t byte = 0;
         std::size_t count = 0;
-        if (!uart_.read(&byte, 1U, count)) {
+        if (!uart_.read(input.data(), input.size(), count)) {
             updateOfflineState(monotonicNow(clock_));
             continue;
         }
@@ -74,14 +114,18 @@ void SbusCore::run() noexcept
             updateOfflineState(monotonicNow(clock_));
             continue;
         }
-        if (frame_size == 0U && byte != 0x0FU) {
-            updateOfflineState(monotonicNow(clock_));
-            continue;
-        }
-        frame[frame_size++] = byte;
-        if (frame_size == frame.size()) {
-            processFrame(frame.data());
-            frame_size = 0U;
+        ring.push(input.data(), count);
+
+        std::uint8_t byte = 0;
+        while (ring.pop(byte)) {
+            if (frame_size == 0U && byte != 0x0FU) {
+                continue;
+            }
+            frame[frame_size++] = byte;
+            if (frame_size == frame.size()) {
+                processFrame(frame.data());
+                frame_size = 0U;
+            }
         }
     }
 }
@@ -93,6 +137,11 @@ void SbusCore::processFrame(const std::uint8_t* frame) noexcept
         updateOfflineState(monotonicNow(clock_));
         return;
     }
+    next.scaled_channels[11] =
+        (static_cast<std::int32_t>(next.raw_channels[11]) -
+         static_cast<std::int32_t>(marshland::sbus::kChannelCenter)) *
+        marshland::sbus::kForceSpeedLimitRpm /
+        static_cast<std::int32_t>(marshland::sbus::kChannelHalfRange);
     const auto now = monotonicNow(clock_);
     std::lock_guard<std::mutex> lock(state_mutex_);
     next.frame_sequence = state_.frame_sequence + 1U;

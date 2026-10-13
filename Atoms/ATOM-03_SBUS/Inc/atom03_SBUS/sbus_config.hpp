@@ -2,10 +2,12 @@
 
 #include <cstdint>
 #include "IConfigView.hpp"
+#include "SbusTypes.hpp"
 
 namespace marshland::atom03 {
 
 struct SbusConfig final {
+    marshland::sbus::SbusSerialParameters serial{};
     std::uint8_t channel_scale_x{1};
     std::uint32_t receive_period_ms{20};
     std::uint32_t loss_timeout_ms{200};

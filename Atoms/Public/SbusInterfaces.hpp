@@ -11,6 +11,9 @@ class IUartByteStream {
 public:
     virtual ~IUartByteStream() = default;
 
+    // Applies the IConfigView-provided serial device before reading.
+    virtual bool configure(const SbusSerialParameters& parameters) noexcept = 0;
+
     // Returns false on transport failure. A successful call may return zero bytes.
     virtual bool read(std::uint8_t* destination, std::size_t capacity,
                       std::size_t& bytes_read) noexcept = 0;

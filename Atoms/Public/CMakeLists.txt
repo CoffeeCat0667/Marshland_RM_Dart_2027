@@ -1,36 +1,25 @@
 # ============================================================================
-# Atoms/Public — 跨 ATOM 共享契约（仅纯类型，无任何 Atom 依赖）
+# Atoms/Public — 跨 ATOM 共享契约的**目标定义入口**
 #
-# 本目标必须保持为叶子节点：只含类型与 inline 工具，不链接任何 ATOM，
-# 否则会与 AppCoordinator 形成依赖环。
-#   允许：MarshlandTypes.hpp、ILifecycle.hpp、StateArbitrationTypes.hpp、
-#         IMonotonicClock.hpp、AppInterfaces.hpp、IConfigView.hpp
-#   禁止：任何 AppCoordinator 相关源码（见 Atoms/Public/AppCoordinator/）
+# 本文件不再定义 marshland_public_headers：
+#   PublicHeaders 已移入 Atoms/Public/Headers/CMakeLists.txt，由顶层 CMake 在
+#   `add_subdirectory(Atoms)` **之前**引入，使 19 个 ATOM 模块 CMakeLists 中的
+#       if(TARGET Marshland::PublicHeaders) ... endif()
+#   真正成立、依赖关系进入 CMake 依赖图。
+#
+# 本文件在 `add_subdirectory(Atoms)` **之后**由顶层引入，负责装配层与聚合目标：
+#   1. AppCoordinator（桥接层，需要 marshland_atoms 已存在）
+#   2. marshland_public（对外聚合：PublicHeaders + ATOM 集合 + 装配层）
+#
+# 顺序不可调换：AppCoordinator 通过 $<TARGET_NAME:...> 语义依赖 marshland_atoms。
 # ============================================================================
-add_library(marshland_public_headers INTERFACE)
-add_library(Marshland::PublicHeaders ALIAS marshland_public_headers)
-
-target_include_directories(marshland_public_headers INTERFACE
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
-
-target_sources(marshland_public_headers INTERFACE
-    "${CMAKE_CURRENT_SOURCE_DIR}/MarshlandTypes.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ILifecycle.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/StateArbitrationTypes.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/IMonotonicClock.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AppInterfaces.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/IConfigView.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/SbusTypes.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/SbusInterfaces.hpp")
 
 # ---------------------------------------------------------------------------
 # 顶层装配与桥接层（AppCoordinator）
 #
 # 位置在 Public/ 之下只是为了就近使用共享类型；它的依赖方向是**自上而下**的，
-# 持有 RuntimeCoordinator 与 StateArbitrator，因此**不属于**上面的公共契约。
+# 持有 RuntimeCoordinator 与 StateArbitrator，因此**不属于**公共契约。
 # 其余 18 个 ATOM 禁止包含 AppCoordinator.hpp。
-#
-# 必须在 add_subdirectory(Atoms) 之后引入，因为需要 marshland_atoms 已存在。
 # ---------------------------------------------------------------------------
 add_subdirectory(AppCoordinator)
 

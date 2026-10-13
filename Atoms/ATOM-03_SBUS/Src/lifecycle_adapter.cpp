@@ -13,7 +13,7 @@ marshland::runtime::ModuleInitResult LifecycleAdapter::initialize(
         return result;
     }
     if (!core_.start(config)) {
-        result.error_message = "UART10 SBUS worker failed to start";
+        result.error_message = "SBUS worker failed to start";
         return result;
     }
     result.success = true;

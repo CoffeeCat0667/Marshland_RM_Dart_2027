@@ -1,12 +1,12 @@
 # ATOM-03_SBUS 工程接入说明
 
-> 版本：1.0  
+> 版本：1.2
 > 日期：2026-10-11  
 > 适用模块：`Atoms/ATOM-03_SBUS`
 
 ## 1. 接入目标
 
-ATOM-03 负责 UART10 上的 SBUS 接收、25 字节组帧、帧有效性判断、CH1～CH16 解码和公共通道快照维护。UART10 已经过硬件电平反转，软件不再做反相。
+ATOM-03 负责配置指定串口设备上的 SBUS 接收、25 字节组帧、帧有效性判断、CH1～CH16 解码和公共通道快照维护。输入已经过硬件电平反转，软件不再做反相。
 
 模块不直接驱动电机、舵机或其他执行器，也不在模块内部实现 `main()`。控制权最终仲裁、安全恢复和机构动作由上层装配及相应模块负责。
 
@@ -24,7 +24,7 @@ Marshland executable
 1. 上层工程先建立 `Atoms/Public` 的 `Marshland::PublicHeaders`。
 2. 上层工程通过 `add_subdirectory(Atoms/ATOM-03_SBUS)` 加入本模块。
 3. ATOM-03 提供目标 `atom_03_sbus` 和别名 `Marshland::atom_03_sbus`。
-4. ATOM-03 只依赖 `Marshland::PublicHeaders` 和 C++ 标准库。
+4. ATOM-03 依赖 `Marshland::PublicHeaders`、C++ 标准库和目标 Ubuntu ARM 的 POSIX/Linux 串口接口。
 5. 上层工程负责决定 ARM 工具链、C++ 标准、警告选项和最终可执行文件。
 6. 本模块不定义 `project()`，不创建可执行文件，不设置全局编译选项。
 
@@ -33,10 +33,10 @@ Marshland executable
 `Atoms/Public` 新增：
 
 - `SbusTypes.hpp`
-  - `SbusChannelSnapshot`：16 通道原始值、统一缩放值、CH5 控制源、CH6 急停状态、CH7 20 帧确认状态、帧状态和在线时间；
+  - `SbusChannelSnapshot`：16 通道原始值、统一缩放值、CH5 控制源、CH6 急停状态、CH7 20 帧确认状态、帧有效性、在线状态、**帧序号（`frame_sequence`，每接收一个有效帧递增，供诊断与消费方判断快照新鲜度）**和最近有效帧时间；
   - `SbusChannelStore`：使用互斥锁保护完整快照替换和复制读取。
 - `SbusInterfaces.hpp`
-  - `IUartByteStream`：UART 字节读取和 `cancel()`；
+  - `IUartByteStream`：UART 参数配置、批量字节读取和 `cancel()`；
   - `ISbusSnapshotReader`：公共快照读取端口。
 
 公共头文件不包含 `AppCoordinator.hpp`、ATOM-02 私有头或其他 ATOM 私有头。
@@ -48,11 +48,13 @@ Marshland executable
 ```text
 IConfigView 实现
 IMonotonicClock 实现
-IUartByteStream 的 UART10 实现
+LinuxSbusByteStream 的配置指定串口实现
 SbusChannelStore
 SbusCore(IUartByteStream&, IMonotonicClock&, SbusChannelStore&)
 LifecycleAdapter(SbusCore&, IConfigView&)
 ```
+
+本模块提供 `LinuxSbusByteStream` 作为 `IUartByteStream` 的 Linux 实现；装配层应创建该对象并将其引用传给 `SbusCore`。
 
 `LifecycleAdapter` 只持有 `SbusCore` 和 `IConfigView` 的引用；装配层必须保证 `SbusCore`、UART、时钟、配置视图和快照存储的寿命长于适配器。
 
@@ -77,6 +79,19 @@ RuntimeStep::InitializeSbusAndVision
 ## 6. 配置接入
 
 配置通过装配层注入的 `marshland::config::IConfigView` 查询，不由 ATOM-03 打开或解析 JSON。
+UART 设备名由 `RuntimeContext::values` 传入；波特率、数据位、奇偶校验和停止位在 Linux UART 实现内固定为 `100000 baud, 8E2`。
+
+RuntimeContext 参数键：
+
+| 键 | 类型/允许值 | 用途 |
+|---|---|---|
+| `sbus.serial_device` | 非空字符串，例如 `/dev/ttyS10` | 实际串口设备路径 |
+
+Linux UART 固定串口格式：
+
+```text
+100000 baud, 8 data bits, even parity, 2 stop bits (8E2)
+```
 
 本模块读取：
 
@@ -95,8 +110,11 @@ RuntimeStep::InitializeSbusAndVision
 ## 7. 数据和线程流
 
 ```text
-UART10
-  -> IUartByteStream::read()
+配置指定的串口设备
+  -> LinuxSbusByteStream::configure(RuntimeContext::values["sbus.serial_device"])
+  -> IUartByteStream::read() 批量读取
+  -> ATOM-03 有限容量环形缓冲区
+  -> 持续消费缓冲区，避免 UART 数据无限积压
   -> SbusCore 独立读取线程
   -> 25 字节组帧
   -> SbusDecoder
@@ -129,7 +147,8 @@ UART 后端必须保证 `cancel()` 能打断阻塞读取。
 - CH9：蓄力机构右电机速度；
 - CH10：换弹机构左电机速度；
 - CH11：换弹机构右电机速度；
-- CH12～CH16：保留，不映射。
+- CH12：变力机构速度，线性映射为 `-2000～+2000 rpm`；`364=-2000 rpm`、`1024=0 rpm`、`1684=+2000 rpm`；
+- CH13～CH16：保留，不映射。
 
 连续通道使用：
 
@@ -137,7 +156,16 @@ UART 后端必须保证 `cancel()` 能打断阻塞读取。
 output = (raw - 1024) * x
 ```
 
+CH12 使用独立的变力机构速度映射，不使用通用缩放变量 `x`：
+
+```text
+force_rpm = (raw - 1024) * 2000 / 660
+```
+
 帧尾不参与有效性判断；帧长度、起始字节和通道范围仍参与判断。无效帧不更新公共快照和最近有效帧时间。
+异常统一通过 `online=false` 表示，不增加额外异常状态或统计接口。
+**`SbusChannelSnapshot::frame_sequence` 保留**：每接收一个有效帧递增一次，用于诊断与消费方判断快照新鲜度；
+它**不**构成帧序号**连续性检查**，也不会因序号跳变而使帧失效。
 
 ## 9. 控制和安全边界
 
@@ -165,5 +193,12 @@ ATOM-03 只在快照中保存 CH5～CH7 的结果：
 - `cancel()`、线程 join 和幂等 shutdown；
 - 无 `main()`、无独立可执行目标；
 - CMake 目标和别名命名。
+
+## 11. 版本记录
+
+| 版本 | 日期 | 说明 |
+|---|---|---|
+| 1.1 | 2026-10-11 | 串口设备改为由 `RuntimeContext::values["sbus.serial_device"]` 传入，`100000 8E2` 固定在 Linux UART 实现内；补充 `LinuxSbusByteStream` 装配说明。 |
+| 1.2 | 2026-10-11 | 明确 `SbusChannelSnapshot::frame_sequence` **保留**（每有效帧递增，供诊断与快照新鲜度判断），并澄清它不构成帧序号连续性检查；§8 的"不增加…帧序号连续性检查或统计接口"措辞随之修正。同步 `Design/Config.md` §7.1 通道表以本文件为准（CH12 为已映射的变力通道、CH13～CH16 保留、CH2/CH3 不区分左右电机）。 |
 
 本阶段按用户要求不执行编译。

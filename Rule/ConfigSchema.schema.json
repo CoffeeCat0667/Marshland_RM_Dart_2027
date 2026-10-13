@@ -116,8 +116,16 @@
         "websocket_push_period_ms": { "type": "integer", "minimum": 1 },
         "estop_response_max_ms": { "type": "integer", "minimum": 1 },
         "zero_torque_send_period_ms": { "type": "integer", "minimum": 1 },
-        "reload_lift_settle_ms": { "type": "integer", "minimum": 0 },
-        "reload_lower_settle_ms": { "type": "integer", "minimum": 0 },
+        "reload_lift_run_s": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "换弹抬起运行时间（秒）。左右电机抬起转速目标均成功提交后计时；到期将两台目标转速设为 0，均成功提交后判定抬起到位（Design/Config.md §4）"
+        },
+        "reload_lower_run_s": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "换弹放下运行时间（秒）。判据同 reload_lift_run_s"
+        },
         "feed_angle2_hold_ms": { "type": "integer", "minimum": 0 },
         "feed_to_reload_lower_delay_s": { "type": "integer", "minimum": 0 },
         "fire_angle_hold_ms": { "type": "integer", "minimum": 0 },
@@ -125,7 +133,6 @@
         "charge_time_s": { "type": "integer", "minimum": 0, "description": "蓄力时间 X" },
         "charge_max_action_ms": { "type": "integer", "minimum": 0 },
         "force_time_s": { "type": "integer", "minimum": 0, "description": "变力时间 X" },
-        "reload_max_action_ms": { "type": "integer", "minimum": 0 },
         "feed_max_action_ms": { "type": "integer", "minimum": 0 },
         "force_max_action_ms": { "type": "integer", "minimum": 0 },
         "yaw_adjust_max_action_ms": { "type": "integer", "minimum": 0, "description": "2s 仅为时间节点，不终止 30s 视觉等待" },
