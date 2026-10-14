@@ -208,6 +208,15 @@ if(MARSHLAND_BUILD_TESTS)
     target_compile_options(marshland_atom15_tests PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
 
+    # ATOM-04 CAN tests
+    add_executable(marshland_atom04_tests Tests/Atom04CanTests.cpp)
+    target_include_directories(marshland_atom04_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(marshland_atom04_tests PRIVATE
+        Marshland::atom_04_can
+        Marshland::PublicHeaders)
+    target_compile_options(marshland_atom04_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+
     # Integration tests (Entry + all ATOMs)
     add_executable(marshland_integration_tests Tests/IntegrationTests.cpp)
     target_include_directories(marshland_integration_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -287,6 +296,18 @@ if(MARSHLAND_BUILD_TESTS)
         config.store_thread_safety
         config.store_schema_version)
 
+    # ATOM-04 CAN test cases
+    set(MARSHLAND_ATOM04_CASES
+        can.slot_contract
+        can.big_endian_codec
+        can.control_frame
+        can.zero_torque_frame
+        can.receive_validation
+        can.node_state_transitions
+        can.snapshot_semantics
+        can.config_validation
+        can.torque_output_gating)
+
     # Integration test cases
     set(MARSHLAND_INTEGRATION_CASES
         integration.full_startup
@@ -320,7 +341,15 @@ if(MARSHLAND_BUILD_TESTS)
                             $<TARGET_FILE:marshland_atom15_tests> "${case_name}")
             endforeach()
 
-            foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
+            foreach(case_name IN LISTS MARSHLAND_ATOM04_CASES)
+                add_test(NAME "marshland.${case_name}"
+                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
+                            $<TARGET_FILE:marshland_atom04_tests> "${case_name}")
+            endforeach()
+
+
+
+        foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
                 add_test(NAME "marshland.${case_name}"
                     COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
                             $<TARGET_FILE:marshland_integration_tests> "${case_name}")
@@ -341,13 +370,17 @@ if(MARSHLAND_BUILD_TESTS)
             add_test(NAME "marshland.${case_name}" COMMAND marshland_atom15_tests "${case_name}")
         endforeach()
 
+        foreach(case_name IN LISTS MARSHLAND_ATOM04_CASES)
+            add_test(NAME "marshland.${case_name}" COMMAND marshland_atom04_tests "${case_name}")
+        endforeach()
+
         foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
             add_test(NAME "marshland.${case_name}" COMMAND marshland_integration_tests "${case_name}")
         endforeach()
     endif()
 
     # Set timeout for all tests
-    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES MARSHLAND_ATOM03_CASES MARSHLAND_ATOM15_CASES MARSHLAND_INTEGRATION_CASES)
+    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES MARSHLAND_ATOM03_CASES MARSHLAND_ATOM15_CASES MARSHLAND_ATOM04_CASES MARSHLAND_INTEGRATION_CASES)
         if(TEST "marshland.${case_name}")
             set_tests_properties("marshland.${case_name}" PROPERTIES TIMEOUT 30)
         endif()

@@ -83,6 +83,18 @@ CanCore(deps)
 LifecycleAdapter(core, config_view)
 ```
 
+**安全状态接线（必须）**：装配层的安全状态机在每次阶段切换时调用
+`core.setTorqueOutputMode(mode)`：
+
+| 安全阶段 | 应设置的模式 |
+|---|---|
+| 初始化后、待机 | `ZERO_TORQUE`（默认值，无需显式设置） |
+| 软件急停锁定等待人工确认 | `ZERO_TORQUE` |
+| 通信异常 / CAN 故障 / 全机静默 | `ZERO_TORQUE` |
+| 安全恢复**已授权出力**、正常运行控制 | `CONTROL` |
+
+未授权的系统只会输出零力矩；这是本模块的 fail-safe 基线，也是缺陷 #1 的修复要点。
+
 `CanCore` 与 `LifecycleAdapter` 必须由装配层同时持有：适配器**只持引用**，内核寿命必须长于适配器。
 `event_sink` 与 `safety_notifier` 为可选端口，允许为 `nullptr`（此时仍会记录事件路径内部计数，
 但不得把"未接线"当成"已实现安全动作"）。
@@ -141,12 +153,15 @@ can0 (SocketCAN, CAN_RAW, 经典 CAN)
 
 CanCore::transmitLoop（独立发送线程）
   * 绝对期限推进（Config.md §15），非"睡固定时长"
-  * **控制帧周期**：发送当前**已锁存**的槽位值（两个控制帧各一次）。
-    初值全 0，即 Config.md §6.2 的零力矩帧；ATOM-05 锁存控制量后，本周期发送的
-    就是控制帧——不再被零力矩帧覆盖（见缺陷 D3）。
-  * **零力矩安全帧**：0x200 / 0x1FF，8 字节全零，每 timing.zero_torque_send_period_ms
-    一次，开环不确认；无视锁存值，安全动作优先。
-  * 控制帧发送失败 -> 该帧锁存值立即归零 + 节流的 BUS_ERROR 事件
+  * **力矩输出阶段互斥（关键）**：零力矩帧与控制帧使用**同一对 CAN ID**，
+    因此每个周期只执行当前授权模式对应的那一种，绝不同时发送。
+    - `TorqueOutputMode::ZERO_TORQUE`（**默认，fail-safe**）：按
+      `timing.zero_torque_send_period_ms` 发送 0x200/0x1FF 全零帧；
+    - `TorqueOutputMode::CONTROL`：按 `timing.can_io_period_ms` 发送已锁存的控制量。
+  * 切换由安全状态显式驱动：`CanCore::setTorqueOutputMode()`；
+    切换时**先清零锁存控制量**，避免授权瞬间发出残余控制量。
+  * 控制帧发送失败 -> 该帧锁存值立即归零 + 节流的 BUS_ERROR 事件，并**把真实错误
+    返回调用方**（`flushLatchedFrames()` 不再固定返回 OK）。
   * 零力矩发送失败 -> 强制锁存归零 + ZERO_TORQUE_FAILED 事件（不节流）+ ICanSafetyNotifier
 ```
 
@@ -191,6 +206,8 @@ ATOM-04 **不做**安全编排：
 | P-02 | `ICanEventSink` 到诊断/安全事件流（`ILifecycleEventSink`）的桥接 | 仅声明；`AtomIntegration.md` §11 第 4 条 |
 | P-03 | 电机反馈字段解析与错误码映射归属 ATOM-05 | ATOM-04 已按裁决不实现 |
 | P-04 | 电机控制帧电流值的实际提交方（ATOM-05 PID 输出） | `CanCore::latchMotorCurrents(frame_id, slots)` 已就绪（下一发送周期生效）；等待调用方接入 |
+| P-06 | **力矩输出模式的驱动方**（安全状态 -> `setTorqueOutputMode`） | 接口已就绪且默认 fail-safe；尚未接线。未接线时系统只会发零力矩（安全但不出力） |
+| P-07 | 设备错误状态 -> `markFault()` / 故障清除 -> `markOnline()` | `markFault` 目前无调用方，FAULT 状态实际不可达；错误码语义归 ATOM-05 |
 
 ## 10. 与既有设计的偏差登记
 
@@ -236,3 +253,4 @@ ATOM-04 **不做**安全编排：
 |---|---|---|
 | 1.0 | 2026-10-12 | 首次编制。登记公共契约、对象图、`InitializeSocketCan` 注册点、配置键表、线程模型、槽位表、安全边界、待接入点与 `can0` 偏差。 |
 | 1.1 | 2026-10-12 | 代码评审修复：控制帧改为"锁存 + 周期发送"，取消 `sendMotorCurrents()`；记录 7 项缺陷修复；更新 P-04 与线程流描述。 |
+| 1.2 | 2026-10-12 | 第二轮评审修复（10 项）：新增 `TorqueOutputMode` 力矩输出门控（默认 fail-safe，两模式互斥）；`flushLatchedFrames()` 诚实回传发送结果；接收侧 DLC 校验；FAULT 粘滞；快照返回实际复制数；强制六节点完整性；BUS_OFF 改由 `CAN_ERR_BUSOFF` 错误帧判定；CMake 补 `Marshland::PublicHeaders` 链接；测试迁至仓库 `Tests/`。 |

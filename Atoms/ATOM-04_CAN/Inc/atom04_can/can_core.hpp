@@ -57,10 +57,19 @@ public:
 
     bool isRunning() const noexcept { return running_.load(std::memory_order_acquire); }
 
+    // ---- 力矩输出阶段门控（缺陷 #1 修复核心）-------------------------------
+    // 默认 ZERO_TORQUE（fail-safe）。发送线程每周期**只**执行当前唯一模式：
+    //   ZERO_TORQUE -> 发送 0x200/0x1FF 全零帧
+    //   CONTROL     -> 发送已锁存的控制量
+    // 两种帧共用同一对 CAN ID，因此绝不允许在同一周期并存。
+    // 安全模块必须在进入/退出的每个阶段显式切换；切换时锁存控制量先归零，
+    // 避免残余控制量在授权瞬间被发出。
+    void setTorqueOutputMode(marshland::can::TorqueOutputMode mode) noexcept;
+    marshland::can::TorqueOutputMode torqueOutputMode() const noexcept;
+
     // 锁存一组电机电流（按槽位顺序），由发送线程按周期发出。
     // 语义：不立即发送、不返回发送结果；下一次发送周期生效。
-    // 缺陷 D3 修复要点：发送线程必须发射**已锁存的控制帧**，否则零力矩帧会
-    // 在每个周期覆盖调用方的控制量，电机永远无法出力。
+    // 注意：只有在 TorqueOutputMode::CONTROL 下才会真正送到总线。
     bool latchMotorCurrents(std::uint32_t frame_id, const MotorSlotValues& currents) noexcept;
 
     // 查询当前锁存的槽位值（诊断用）。
@@ -75,7 +84,10 @@ public:
     // 注意：无论锁存值如何，本方法发送的都是全零帧（安全动作优先）。
     marshland::can::CanError sendZeroTorque() noexcept;
 
-    // 立即发送当前锁存的控制帧（诊断/测试用；发送线程按周期调用内部版本）。
+    // 立即发送当前锁存的控制帧，并**返回真实发送结果**（缺陷 #2 修复）：
+    // 任一帧发送失败都返回首个失败错误，绝不虚报成功。
+    // 仅在 TorqueOutputMode::CONTROL 下发送；其他模式返回当前模式对应的
+    // 安全帧发送结果（ZERO_TORQUE 模式下发零力矩帧）。
     marshland::can::CanError flushLatchedFrames() noexcept;
 
     marshland::can::CanBusStatus busStatus() const noexcept;
@@ -94,7 +106,7 @@ private:
     bool shouldPublishBusError(marshland::can::CanError error) noexcept;
     void publishNodeEvent(const marshland::can::CanEvent& event) noexcept;
     void notifyZeroTorqueFailure(const marshland::can::CanIoResult& result) noexcept;
-    void sendLatchedFrames() noexcept;
+    marshland::can::CanError sendLatchedFrames() noexcept;
     marshland::can::CanBusStatus snapshotBusStatus() const noexcept;
 
     Dependencies dependencies_;
@@ -112,6 +124,10 @@ private:
     // 锁存的控制帧槽位值；以互斥锁保护（提交线程与发送线程并发）。
     mutable std::mutex latch_mutex_;
     std::array<MotorSlotValues, marshland::can::kMotorControlFrameCount> latched_{};
+
+    // 力矩输出模式：默认 fail-safe 零力矩。
+    std::atomic<marshland::can::TorqueOutputMode> torque_mode_{
+        marshland::can::TorqueOutputMode::ZERO_TORQUE};
 };
 
 } // namespace marshland::atom04

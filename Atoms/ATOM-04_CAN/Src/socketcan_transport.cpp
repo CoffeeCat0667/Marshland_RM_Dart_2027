@@ -11,6 +11,7 @@
 #  include <cerrno>
 #  include <cstring>
 #  include <linux/can.h>
+#  include <linux/can/error.h>
 #  include <linux/can/raw.h>
 #endif
 
@@ -26,12 +27,14 @@ constexpr marshland::can::CanError classifyErrno(int error_number) noexcept
     switch (error_number) {
     case 0:
         return CanError::OK;
-    // 接口/总线不可用
+    // 缺陷 #8 修复：接口不存在/不可达**不等于** CAN 控制器进入 BUS_OFF。
+    // BUS_OFF 只能由内核错误帧 CAN_ERR_BUSOFF 判定（见 receive）。
+    // 这里统一归为 BUS_ERROR，并保留 errno 供诊断定位。
     case ENETDOWN:
     case ENETUNREACH:
     case ENODEV:
     case ECONNREFUSED:
-        return CanError::BUS_OFF;
+        return CanError::BUS_ERROR;
     // 协议/设备层错误
     case EIO:
     case EPROTO:
@@ -118,10 +121,15 @@ marshland::can::CanIoResult LinuxSocketCanTransport::open(const char* interface_
         (void)::setsockopt(fd, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &disabled, sizeof(disabled));
         // 接收自身发送的帧：关闭，避免把控制帧回显误判为节点反馈。
         (void)::setsockopt(fd, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, &disabled, sizeof(disabled));
-        // 不接收错误帧（Design/Config.md §6.1：错误帧处理=丢弃）。
-        // 这里使用"接受全部"的过滤器写法：错误帧过滤由 CAN_RAW_ERR_FILTER 控制，
-        // DISCARD 语义下保持默认（不请求错误帧），因此不设置该选项。
-        // 回复帧回环保持默认（1），不影响本模块发送语义。
+        // 缺陷 #8 修复：Design/Config.md §6.1 要求"错误帧处理=丢弃"，但 ATOM-04 的
+        // 验收条件又要求能区分 BUS_OFF 与总线错误。SocketCAN 下 BUS_OFF 的**唯一**
+        // 可靠观测来源就是内核错误帧 CAN_ERR_BUSOFF，因此必须订阅它：
+        //   * 只向内核请求 CAN_ERR_BUSOFF，不请求其他错误帧；
+        //   * 收到后提取状态即丢弃（符合 DISCARD），不会把错误帧交给上层业务。
+        {
+            const can_err_mask_t err_mask = CAN_ERR_BUSOFF;
+            (void)::setsockopt(fd, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &err_mask, sizeof(err_mask));
+        }
     }
 
     // 读写超时：使用 poll 控制接收超时，这里只固定发送超时，避免 TX 线程无限阻塞。
@@ -224,6 +232,7 @@ marshland::can::CanIoResult LinuxSocketCanTransport::receive(marshland::can::Can
     }
     if ((descriptor.revents & POLLIN) == 0) {
         // POLLERR / POLLHUP / POLLNVAL：接口被删除或总线进入异常。
+        // 缺陷 #8：这里不再猜测 BUS_OFF；BUS_OFF 由 CAN_ERR_BUSOFF 错误帧确定。
         const CanError mapped = ((descriptor.revents & POLLNVAL) != 0) ? CanError::NOT_OPEN
                                                                       : CanError::BUS_ERROR;
         last_error_code_.store(static_cast<int>(mapped), std::memory_order_release);
@@ -250,6 +259,22 @@ marshland::can::CanIoResult LinuxSocketCanTransport::receive(marshland::can::Can
         // 部分读：帧结构不完整，丢弃，不得当作有效帧。
         last_error_code_.store(static_cast<int>(CanError::FRAME_INVALID), std::memory_order_release);
         return failure(CanError::FRAME_INVALID, 0);
+    }
+
+    // 缺陷 #8：识别内核错误帧。CAN_ERR_BUSOFF -> BUS_OFF；其余错误帧丢弃。
+    if ((raw.can_id & CAN_ERR_FLAG) != 0U) {
+        // CAN_ERR_MASK / CAN_ERR_BUSOFF 已是 canid_t（uint32_t），无需再转换。
+        const canid_t error_class = raw.can_id & CAN_ERR_MASK;
+
+        if (error_class == CAN_ERR_BUSOFF) {
+            last_error_code_.store(static_cast<int>(CanError::BUS_OFF), std::memory_order_release);
+            last_errno_.store(0, std::memory_order_release);
+            return failure(CanError::BUS_OFF, 0);
+        }
+
+        // 其他错误帧（控制器/协议/收发器）：按 DISCARD 语义丢弃内容，仅记录分类。
+        last_error_code_.store(static_cast<int>(CanError::BUS_ERROR), std::memory_order_release);
+        return failure(CanError::BUS_ERROR, 0);
     }
 
     marshland::can::CanFrame frame{};

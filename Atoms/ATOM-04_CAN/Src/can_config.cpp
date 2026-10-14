@@ -108,7 +108,11 @@ ConfigStatus readMotors(const IConfigView& view, CanRuntimeConfig& loaded) noexc
     if (size_status != ConfigStatus::OK) {
         return size_status;
     }
-    if (count == 0U || count > marshland::can::kMaxMotorNodes) {
+    // 缺陷 #6 修复：Design/Config.md §6.2 明确"全部 6 个电机纳入节点在线监测、
+    // 反馈解析和零力矩覆盖"。若配置只给部分电机，缺失电机将永远收不到零力矩
+    // 安全帧，属于安全覆盖面缺口。因此要求**恰好 6 个节点**且构成 0x201~0x206
+    // 的完整集合（末尾另有集合完整性校验），不接受部分映射。
+    if (count != marshland::can::kMaxMotorNodes) {
         return ConfigStatus::OUT_OF_RANGE;
     }
 
@@ -157,6 +161,21 @@ ConfigStatus readMotors(const IConfigView& view, CanRuntimeConfig& loaded) noexc
         loaded.motors[loaded.motor_count].motor_id = static_cast<int>(motor_id);
         loaded.motors[loaded.motor_count].node_id = node_id;
         ++loaded.motor_count;
+    }
+
+    // 集合完整性：必须恰好覆盖 0x201~0x206，无缺号、无多余。
+    for (std::uint32_t node = marshland::can::kMotorNodeMin;
+         node <= marshland::can::kMotorNodeMax; ++node) {
+        bool present = false;
+        for (std::size_t k = 0; k < loaded.motor_count; ++k) {
+            if (loaded.motors[k].node_id == node) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) {
+            return ConfigStatus::OUT_OF_RANGE;
+        }
     }
 
     return ConfigStatus::OK;

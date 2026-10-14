@@ -54,3 +54,14 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
+
+# Depend on shared contracts, not ATOM-04 implementation or AppCoordinator.
+if(TARGET Marshland::PublicHeaders)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::PublicHeaders)
+endif()
+
+if(ATOM_MODULE_SOURCES)
+    find_package(Threads REQUIRED)
+    target_link_libraries(${ATOM_MODULE_TARGET} PUBLIC Threads::Threads)
+endif()

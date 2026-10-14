@@ -1,7 +1,11 @@
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -43,7 +47,10 @@ const char* kMinimalValidConfig = R"({
   },
   "timing": {
     "max_control_cycle_ms": 100,
-    "motor_loop_period_ms": 20
+    "motor_loop_period_ms": 20,
+    "sbus_receive_period_ms": 20,
+    "sbus_loss_timeout_ms": 200,
+    "can_comm_timeout_ms": 200
   },
   "motor": [
     {
@@ -73,11 +80,18 @@ const char* kMinimalValidConfig = R"({
   "sbus": {
     "serial_device": "/dev/ttyS10",
     "baudrate": 100000,
-    "channel_count": 16
+    "channel_count": 16,
+    "channel_scale_x": 1,
+    "frame_bytes": 25,
+    "joystick_center": 1024,
+    "valid_min": 364,
+    "valid_max": 1684
   },
   "persistence": {
     "file_format": "JSON",
-    "directory": "./Config"
+    "directory": "./Config",
+    "file_name": "dart_control.json",
+    "reserved_variable_count": 100
   }
 })";
 
@@ -93,6 +107,48 @@ const char* kMissingRequiredField = R"({
     "auto_total_shots": 4
   }
 })";
+
+constexpr const char* kCanTimeoutKey = "timing.can_comm_timeout_ms";
+
+std::string WithCanTimeout(const char* json_value)
+{
+    std::string text{kMinimalValidConfig};
+    constexpr std::string_view field{"\"can_comm_timeout_ms\": 200"};
+    const auto position = text.find(field);
+    Check(position != std::string::npos, "fixture contains CAN timeout");
+    // Keep the surrounding object valid when testing a missing required field.
+    if (!json_value) {
+        const auto comma = text.rfind(',', position);
+        text.erase(comma, position + field.size() - comma);
+    } else {
+        text.replace(position, field.size(),
+                     std::string{"\"can_comm_timeout_ms\": "} + json_value);
+    }
+    return text;
+}
+
+class CanTimeoutFile final {
+public:
+    static constexpr const char* path = "test_config_can_timeout.json";
+
+    explicit CanTimeoutFile(const std::string& text) { write(text); }
+    ~CanTimeoutFile() { std::remove(path); }
+
+    void write(const std::string& text) const
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
+        out.close();
+        Check(static_cast<bool>(out), "write CAN timeout fixture");
+    }
+
+    std::string read() const
+    {
+        std::ifstream in(path, std::ios::binary);
+        Check(static_cast<bool>(in), "read CAN timeout fixture");
+        return {std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+    }
+};
 
 } // namespace
 
@@ -263,7 +319,7 @@ void TestConfigStoreMotorArray()
 
     // Access motor[0].id
     std::int64_t motor_id = 0;
-    const auto status = store.getInt("motor.0.id", motor_id);
+    const auto status = store.getIntAt("motor", 0, "id", motor_id);
 
     Check(status == ConfigStatus::OK, "access motor array element");
     Check(motor_id == 1, "motor[0].id == 1");
@@ -281,48 +337,145 @@ void TestConfigStoreNestedKeys()
     store.load(temp_file);
     std::remove(temp_file);
 
-    // Access motor[0].pid.kp
-    std::int64_t kp = 0;
-    const auto status = store.getInt("motor.0.pid.kp", kp);
+    const char* mode = nullptr;
+    std::uint64_t size = 0;
+    const auto status = store.getString("mode.initial.system_mode", mode, size);
 
     Check(status == ConfigStatus::OK, "access deeply nested key");
-    Check(kp == 3, "motor[0].pid.kp == 3");
+    Check(std::string_view(mode, size) == "UNINITIALIZED", "nested mode value");
 }
 
 void TestConfigStoreReload()
 {
-    const char* temp_file = "test_config_reload.json";
-
-    // First config
-    {
-        std::ofstream out(temp_file);
-        out << R"({
-          "schema_version": 1,
-          "test_value": 42
-        })";
-    }
-
+    CanTimeoutFile file{WithCanTimeout("200")};
     ConfigStore store;
-    store.load(temp_file);
-
+    Check(store.load(CanTimeoutFile::path).success, "first config loads");
+    const auto version = store.configVersion();
     std::int64_t value = 0;
-    store.getInt("test_value", value);
-    Check(value == 42, "first load: test_value == 42");
+    Check(store.getInt(kCanTimeoutKey, value) == ConfigStatus::OK && value == 200,
+          "first load uses initial CAN timeout");
+    file.write(WithCanTimeout("500"));
+    Check(store.reload().success, "reload accepts changed timeout");
+    Check(store.getInt(kCanTimeoutKey, value) == ConfigStatus::OK && value == 500,
+          "reload exposes changed CAN timeout");
+    Check(store.configVersion() == version + 1, "reload increments version");
+}
 
-    // Second config (reload)
-    {
-        std::ofstream out(temp_file);
-        out << R"({
-          "schema_version": 1,
-          "test_value": 99
-        })";
+void TestCanCommTimeoutLoad()
+{
+    for (const char* valid : {"1", "200", "6000"}) {
+        CanTimeoutFile file{WithCanTimeout(valid)};
+        ConfigStore store;
+        Check(store.load(CanTimeoutFile::path).success, "legal CAN timeout loads");
+        const IConfigView& view = store;
+        std::int64_t value = 0;
+        Check(view.getInt(kCanTimeoutKey, value) == ConfigStatus::OK,
+              "CAN timeout readable through public view");
+        Check(value == std::stoll(valid), "CAN timeout value preserved");
     }
 
-    store.load(temp_file);
-    store.getInt("test_value", value);
-    Check(value == 99, "reload: test_value == 99");
+    const char* invalid_values[] = {nullptr, "0", "-1", "6001", "9223372036854775807",
+                                   "\"200\"", "200.0", "true", "null"};
+    for (const char* invalid : invalid_values) {
+        CanTimeoutFile file{WithCanTimeout(invalid)};
+        ConfigStore store;
+        const auto result = store.load(CanTimeoutFile::path);
+        Check(!result.success && result.error == ConfigError::INVALID_SCHEMA,
+              "missing, mistyped or out-of-range CAN timeout rejected");
+        Check(!store.isLoaded() && store.configVersion() == 0,
+              "failed load leaves store unloaded");
+        Check(std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+                          [](const auto& d) { return d.key == kCanTimeoutKey; }),
+              "CAN timeout diagnostic contains full field path");
+        std::int64_t value = 77;
+        Check(store.getInt(kCanTimeoutKey, value) == ConfigStatus::NOT_LOADED && value == 77,
+              "failed load does not fabricate a default");
+    }
+}
 
-    std::remove(temp_file);
+void TestCanCommTimeoutUpdate()
+{
+    CanTimeoutFile file{WithCanTimeout("200")};
+    std::uint64_t callbacks = 0;
+    ConfigStore store([&](const std::string& key, std::uint64_t version) {
+        Check(key == kCanTimeoutKey, "callback identifies CAN timeout");
+        Check(version == callbacks + 2, "callback identifies committed version");
+        ++callbacks;
+    });
+    Check(store.load(CanTimeoutFile::path).success, "load before updating timeout");
+    const ConfigValue invalid_values[] = {
+        std::int64_t{0}, std::int64_t{-1}, std::int64_t{6001},
+        std::numeric_limits<std::int64_t>::max(), 200.0, true,
+        std::string{"200"}, std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity()
+    };
+    const auto unchanged_file = file.read();
+    for (const auto& value : invalid_values) {
+        const auto result = store.updateRuntime(kCanTimeoutKey, value, UpdateSource::WEB,
+                                                UpdateMode::MANUAL);
+        Check(!result.accepted && !result.effective && !result.persisted,
+              "invalid update is not effective or persisted");
+        std::int64_t current = 0;
+        Check(store.getInt(kCanTimeoutKey, current) == ConfigStatus::OK && current == 200,
+              "rejected update retains active value");
+        Check(store.configVersion() == 1 && callbacks == 0 && file.read() == unchanged_file,
+              "rejected update retains version, callbacks and file");
+    }
+    for (const auto source : {UpdateSource::NONE, UpdateSource::SBUS, UpdateSource::AUTO}) {
+        const auto result = store.updateRuntime(kCanTimeoutKey, std::int64_t{500}, source,
+                                                UpdateMode::MANUAL);
+        Check(result.error == ConfigError::NOT_AUTHORIZED && !result.effective,
+              "non-WEB source cannot update timeout");
+    }
+    for (const auto mode : {UpdateMode::STANDBY, UpdateMode::AUTO_FIRE, UpdateMode::FAULT}) {
+        const auto result = store.updateRuntime(kCanTimeoutKey, std::int64_t{500},
+                                                UpdateSource::WEB, mode);
+        Check(result.error == ConfigError::NOT_AUTHORIZED && !result.effective,
+              "disallowed mode cannot update timeout");
+    }
+    Check(file.read() == unchanged_file && store.configVersion() == 1 && callbacks == 0,
+          "authorization rejection has no side effects");
+    for (const std::int64_t value : {1, 500, 6000}) {
+        const auto mode = value == 500 ? UpdateMode::DEBUG : UpdateMode::MANUAL;
+        const auto result = store.updateRuntime(kCanTimeoutKey, value, UpdateSource::WEB, mode);
+        Check(result.accepted && result.effective && result.persisted && result.error == ConfigError::OK,
+              "WEB update in MANUAL/DEBUG applies and persists");
+        const IConfigView& view = store;
+        std::int64_t current = 0;
+        Check(view.getInt(kCanTimeoutKey, current) == ConfigStatus::OK && current == value,
+              "successful update immediately visible");
+        ConfigStore restarted;
+        Check(restarted.load(CanTimeoutFile::path).success,
+              "persisted config can be loaded after restart");
+        Check(restarted.getInt(kCanTimeoutKey, current) == ConfigStatus::OK && current == value,
+              "restart restores persisted timeout");
+    }
+    Check(callbacks == 3 && store.configVersion() == 4, "only successful updates increment version");
+}
+
+void TestCanCommTimeoutPersistenceFailure()
+{
+    CanTimeoutFile file{WithCanTimeout("200")};
+    ConfigStore store;
+    Check(store.load(CanTimeoutFile::path).success, "load before persistence failure");
+    Check(std::remove(CanTimeoutFile::path) == 0, "remove original fixture");
+    std::filesystem::create_directory(CanTimeoutFile::path);
+    PersistResult result;
+    try {
+        result = store.updateRuntime(kCanTimeoutKey, std::int64_t{500}, UpdateSource::WEB,
+                                     UpdateMode::MANUAL);
+    } catch (...) {
+        std::filesystem::remove(CanTimeoutFile::path);
+        throw;
+    }
+    std::filesystem::remove(CanTimeoutFile::path);
+    Check(result.accepted && result.effective && !result.persisted &&
+          result.error == ConfigError::PERSISTENCE_FAILED,
+          "persistence failure is separate from runtime effectiveness");
+    std::int64_t current = 0;
+    Check(store.getInt(kCanTimeoutKey, current) == ConfigStatus::OK && current == 500,
+          "effective value preserved after persistence failure");
+    Check(store.configVersion() == 2, "effective update increments version on write failure");
 }
 
 void TestConfigStoreIConfigViewInterface()
@@ -451,6 +604,10 @@ int main(int argc, char** argv)
             TestConfigStoreThreadSafety();
         } else if (case_name == "config.store_schema_version") {
             TestConfigStoreSchemaVersion();
+        } else if (case_name == "config.can_comm_timeout") {
+            TestCanCommTimeoutLoad();
+            TestCanCommTimeoutUpdate();
+            TestCanCommTimeoutPersistenceFailure();
         } else {
             std::fprintf(stderr, "unknown test case: %s\n", argv[1]);
             return 1;

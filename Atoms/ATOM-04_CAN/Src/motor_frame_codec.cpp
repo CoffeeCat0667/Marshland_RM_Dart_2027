@@ -51,6 +51,14 @@ CanError buildControlFrame(std::uint32_t frame_id, const MotorSlotValues& curren
     frame.dlc = marshland::can::kMotorControlDlc;
 
     for (std::size_t slot = 0; slot < marshland::can::kMotorSlotsPerFrame; ++slot) {
+        // 缺陷 #3 修复：只编码**确有对应 CAN 节点**的槽位。
+        // 0x1FF 的 slot2/slot3 在 Design/Config.md §6.2 中无定义节点，
+        // 必须恒为 0x0000，不得把调用方传入的值当作虚构的 0x207/0x208 发出。
+        std::uint32_t node_id = 0;
+        if (!marshland::can::motorNodeOf(frame_id, slot, node_id)) {
+            encodeBigEndianInt16(0, frame.payload.data() + (slot * 2U));
+            continue;
+        }
         encodeBigEndianInt16(currents[slot], frame.payload.data() + (slot * 2U));
     }
 

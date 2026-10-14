@@ -45,6 +45,14 @@ DispatchOutcome ProtocolDispatcher::onReceived(const CanFrame& frame) noexcept
     DispatchOutcome outcome{};
     outcome.error = CanError::OK;
 
+    // 帧结构前置校验：DLC 必须是 8（Design/Config.md §6.2 报文表）。
+    // 截断/损坏帧不得刷新节点在线状态，也不得投递给 ATOM-05。
+    if (frame.dlc != marshland::can::kMotorControlDlc) {
+        outcome.error = CanError::FRAME_INVALID;
+        outcome.node_id = frame.can_id;
+        return outcome;
+    }
+
     if (!marshland::can::isMotorNode(frame.can_id)) {
         // 未识别 ID：不投递、不解析、不静默丢弃（交由调用方计数与诊断）。
         outcome.error = CanError::UNKNOWN_ID;
@@ -70,14 +78,20 @@ DispatchOutcome ProtocolDispatcher::onReceived(const CanFrame& frame) noexcept
     current.last_frame_time_us = frame.timestamp_us;
     current.frame_count = 1;
 
-    // 读取旧状态只为判断是否发生 ONLINE 跃变；读取失败视为首次在线。
+    // 读取旧状态：既要继续计数，也要遵守 FAULT 粘滞不变量。
     CanNodeStatus existing[marshland::can::kMaxMotorNodes]{};
     const std::size_t found = store_.snapshot(existing, marshland::can::kMaxMotorNodes);
     bool seen = false;
     for (std::size_t i = 0; i < found; ++i) {
         if (existing[i].node_id == node_id) {
             current.frame_count = existing[i].frame_count + 1U;
-            outcome.node_became_online = existing[i].state != CanNodeState::ONLINE;
+            if (existing[i].state == CanNodeState::FAULT) {
+                // 粘滞：保留 FAULT，仍继续计数并转发帧，但不宣布恢复在线。
+                current.state = CanNodeState::FAULT;
+                outcome.node_became_online = false;
+            } else {
+                outcome.node_became_online = existing[i].state != CanNodeState::ONLINE;
+            }
             seen = true;
             break;
         }
@@ -144,6 +158,26 @@ bool ProtocolDispatcher::markFault(std::uint32_t node_id) noexcept
         }
         CanNodeStatus updated = nodes[i];
         updated.state = CanNodeState::FAULT;
+        return store_.replaceOne(node_id, updated);
+    }
+    return false;
+}
+
+bool ProtocolDispatcher::markOnline(std::uint32_t node_id, std::uint64_t now_us) noexcept
+{
+    CanNodeStatus nodes[marshland::can::kMaxMotorNodes]{};
+    const std::size_t count = store_.snapshot(nodes, marshland::can::kMaxMotorNodes);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (nodes[i].node_id != node_id) {
+            continue;
+        }
+        if (nodes[i].state != CanNodeState::FAULT) {
+            return false;  // 只用于解除故障，不参与常规在线判定
+        }
+        CanNodeStatus updated = nodes[i];
+        updated.state = CanNodeState::ONLINE;
+        updated.has_received = true;
+        updated.last_frame_time_us = now_us;
         return store_.replaceOne(node_id, updated);
     }
     return false;

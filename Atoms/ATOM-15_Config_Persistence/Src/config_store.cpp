@@ -138,7 +138,14 @@ bool validate(const JsonValue& root, std::vector<ConfigDiagnostic>& d) {
         const auto pid=member(&m,"pid"); if(pid&&pid->kind==JsonValue::Kind::Object) { for(const char* key:{"kp","ki","kd","integral_limit","output_limit","control_period_ms"}) requiredMember(pid,key,JsonValue::Kind::Integer,d); requiredMember(pid,"enabled",JsonValue::Kind::Boolean,d); const auto period=member(pid,"control_period_ms"); if(period&&integer(*period)&&period->integer_value<=0) diagnostic(d,p+".pid.control_period_ms","must be positive"); }
     }
     const auto sbus=member(&root,"sbus"); if(sbus&&sbus->kind==JsonValue::Kind::Object) { nonEmptyString(sbus,"serial_device",d); integerRange(sbus,"channel_scale_x",1,10,d); integerRange(sbus,"frame_bytes",25,25,d); integerRange(sbus,"joystick_center",0,2047,d); integerRange(sbus,"valid_min",0,2047,d); integerRange(sbus,"valid_max",0,2047,d); const auto min=member(sbus,"valid_min"); const auto max=member(sbus,"valid_max"); if(min&&max&&integer(*min)&&integer(*max)&&min->integer_value>max->integer_value) diagnostic(d,"sbus.valid_min","must not exceed valid_max"); }
-    const auto timing=member(&root,"timing"); if(timing&&timing->kind==JsonValue::Kind::Object) { integerRange(timing,"sbus_receive_period_ms",1,86400000,d); integerRange(timing,"sbus_loss_timeout_ms",1,86400000,d); }
+    const auto timing=member(&root,"timing");
+    if(timing&&timing->kind==JsonValue::Kind::Object) {
+        const auto firstDiagnostic=d.size();
+        integerRange(timing,"sbus_receive_period_ms",1,86400000,d);
+        integerRange(timing,"sbus_loss_timeout_ms",1,86400000,d);
+        integerRange(timing,"can_comm_timeout_ms",1,6000,d);
+        for(auto i=firstDiagnostic;i<d.size();++i) d[i].key="timing."+d[i].key;
+    }
     const auto persistence=member(&root,"persistence"); if(persistence&&persistence->kind==JsonValue::Kind::Object) { for(const char* key:{"file_format","directory","file_name"}) if(!member(persistence,key)) diagnostic(d,std::string("persistence.")+key,"missing required value"); const auto count=member(persistence,"reserved_variable_count"); if(count&&(!integer(*count)||count->integer_value!=100)) diagnostic(d,"persistence.reserved_variable_count","must be integer 100"); }
     for(const auto& [key,value]:root.object_value) if(isReservedKey(key)&&(!integer(value)||key<"reserved_001"||key>"reserved_100")) diagnostic(d,key,"reserved variable must be an int32-compatible reserved_001..reserved_100 value");
     return d.empty();

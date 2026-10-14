@@ -97,6 +97,33 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// TorqueOutputMode —— ATOM-04 的力矩输出阶段（由安全模块授权切换）
+//
+// 为什么必须有这个门控（缺陷 #1）：
+//   零力矩帧与控制帧使用**同一对 CAN ID**。若发送线程每周期无条件发送零力矩帧，
+//   它就会与控制帧在总线上逐帧交替，等效于每个周期给电机发一次零电流命令，
+//   电机无法连续出力。因此"是否发零力矩"必须由安全状态决定，而不是由发送线程决定。
+//
+// 约定：
+//   * 默认值为 ZERO_TORQUE（fail-safe）：任何未显式授权的系统都只能输出零力矩；
+//   * 切换由装配层依据安全状态调用 ICanTorqueGate 的授权方；
+//   * 两种模式**互斥**，同一周期只发一类帧，永不并存。
+// ---------------------------------------------------------------------------
+enum class TorqueOutputMode : std::uint8_t {
+    ZERO_TORQUE = 0,   // 发送全零帧（急停锁定、通信异常、待机、安全恢复未授权出力）
+    CONTROL,           // 发送已锁存的控制量（安全恢复授权出力 / 正常运行）
+};
+
+inline const char* toString(TorqueOutputMode mode) noexcept
+{
+    switch (mode) {
+    case TorqueOutputMode::ZERO_TORQUE: return "ZERO_TORQUE";
+    case TorqueOutputMode::CONTROL:     return "CONTROL";
+    }
+    return "UNKNOWN";
+}
+
+// ---------------------------------------------------------------------------
 // ICanSafetyNotifier —— 零力矩发送失败的安全上报端口
 //
 // 依据 Design/Config.md §6.3 与 §14.2（F-CAN-002）：零力矩帧发送失败时进入

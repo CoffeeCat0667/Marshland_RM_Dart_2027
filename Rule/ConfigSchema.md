@@ -10,9 +10,9 @@
 | 机器可读形式 | `Rule/ConfigSchema.schema.json`（JSON Schema 2020-12）—— **形式化契约，供 `ATOM-15` 直接校验**。本文件是它的中文可读说明；两者不一致时以 schema 文件为准并修订本文件 |
 | 消费者 | `ATOM-15`（解析、校验、提供查询）与 `ATOM-03`～`ATOM-19`（经 `IConfigView` 取值） |
 | 关联文档 | `Rule/AtomIntegration.md`（接入规范）、`Atoms/ATOM-15_Config_Persistence/PLAN.md`（实现方案） |
-| 版本 | 1.2 |
+| 版本 | 1.4 |
 | 编制日期 | 2026-09-27 |
-| 更新日期 | 2026-10-11 |
+| 更新日期 | 2026-10-14 |
 | 状态 | **正式**。修改本文件必须同步 `Design/Config.md` 与 `ConfigSchema.schema.json`；冲突时以 `Design/Config.md` 的数值为准并修订本文件 |
 
 **为什么需要本文件**：`Design/Config.md` 定义了约 200 项参数的**数值**，但没有规定 JSON 键名。
@@ -214,7 +214,7 @@
 | `timing.force_max_action_ms` | int | ms | 变力机构最大动作时间 |
 | `timing.yaw_adjust_max_action_ms` | int | ms | YAW 调整最大动作时间（2000） |
 | `timing.fire_max_action_ms` | int | ms | 发射机构最大动作时间 |
-| `timing.can_comm_timeout_ms` | int | ms | CAN 通信超时（200） |
+| `timing.can_comm_timeout_ms` | int | ms | 必需；初始值 200；范围 1～6000；允许热修改，WEB 来源且仅 MANUAL/DEBUG 模式；缺失时加载失败；ATOM-15 不实现超时后的业务处理 |
 | `timing.iic_comm_timeout_ms` | int | ms | IIC 通信超时（200） |
 | `timing.http_request_timeout_ms` | int | ms | HTTP 请求超时（200） |
 | `timing.websocket_io_timeout_ms` | int | ms | WebSocket 单次读写/消息处理超时 |
@@ -232,8 +232,8 @@
 
 | 元素键 | 类型 | 单位 | 说明 |
 |---|---|---|---|
-| `id` | int | — | 电机标识（1、2 蓄力；3 YAW；4 变力） |
-| `role` | enum str | — | `charge` / `yaw` / `force`；`Config.md` §5.1 已确认三者 |
+| `id` | int | — | 电机标识（1 右蓄力、2 左蓄力、3 右换弹、4 左换弹、5 YAW、6 变力）；映射见 `Config.md` §5.1 |
+| `role` | enum str | — | `charge_right` / `charge_left` / `reload_right` / `reload_left` / `yaw` / `force`；与 `Config.md` §5.1 的六电机机构对应 |
 | `bus` | str | — | SocketCAN 接口名，`CAN0` |
 | `node` | str | — | CAN 节点 ID，十六进制字符串 `"0x201"` 形式 |
 | `control_mode` | str | — | 控制方式，`CLOSED_LOOP_PID` |
@@ -789,5 +789,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 | 1.0 | 2026-09-27 | 首次编制。规定键名格式、域封闭集合、数组与元素约定、值类型与枚举字面量、单位后缀、七条禁令；建立 `baseline`/`mode`/`timing`/`motor`/`force`/`reload`/`feed`/`fire`/`can`/`sbus`/`gpio`/`servo`/`vision`/`http`/`websocket`/`persistence`/`fault`/`thread`/`log` 全域键表；给出校验规则与 5 项待裁决。数值一律以 `Design/Config.md` 为准。 |
 | 1.1 | 2026-10-10 | ① **撤回错误声明**：v1.0 声称编码器阈值存在 7500 vs 2500 冲突，经全仓检索 `Atoms/` 内不存在任何 2500 rpm 编码器阈值（2500 仅为舵机脉宽），该冲突不存在，权威值唯一为 7500。② 按"全入 JSON"决定改写：HTTP 路由字段与错误结构、WS 消息类型与 payload 字段、控制源选择规则表（`sbus.rules[]`）、故障安全规则（`fault.rules`）全部改为**必须**入 JSON 的结构化字段，并禁止代码另行硬编码。③ 新增形式化契约 `Rule/ConfigSchema.schema.json`（JSON Schema 2020-12）作为机器可读校验入口。④ 待裁决事项更新为 4 项（舵机归口、`schema_version` 语义、章节号复核、`servo_mechanisms` 与 `servo.channels` 重复）。 |
 | 1.2 | 2026-10-11 | 新增 `sbus.channel_scale_x` 必填配置，类型为整数，范围 1～10；明确所有连续 SBUS 通道共用该缩放变量，并同步更新 JSON Schema。 |
+| 1.3 | 2026-10-14 | 补齐 `timing.can_comm_timeout_ms` 的必需性、初始值 200、范围 1～6000 和热修改规则，并同步 JSON Schema 与初始配置。 |
+| 1.4 | 2026-10-14 | 将 `motor[].role` 同步为现有六电机角色，修正电机标识说明；保持数组按 id 标识，不依赖数组顺序；不变更初始配置、PID 数值或其他校验约束。 |
 
 

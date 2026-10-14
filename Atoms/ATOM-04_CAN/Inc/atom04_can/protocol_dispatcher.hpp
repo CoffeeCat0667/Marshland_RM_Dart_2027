@@ -46,8 +46,12 @@ public:
     bool registerNodes() noexcept;
 
     // 处理一个已收到的原始帧。
-    //   * 0x201~0x206：刷新节点在线状态并原样投递给 sink；
+    //   * 帧结构非法（DLC != 8）：返回 FRAME_INVALID，**不刷新在线状态、不投递**；
+    //   * 0x201~0x206 且 DLC==8：刷新节点在线状态并原样投递给 sink；
     //   * 其他 ID（含 0x200/0x1FF 回显）：返回 UNKNOWN_ID，不投递、不臆造字段。
+    // 状态不变量：FAULT 为粘滞终态——故障节点仍接收并转发帧（否则 ATOM-05 看不到
+    // 恢复尝试），但其 state 不会被反馈或超时轮询改回 ONLINE。解除故障必须显式调用
+    // markOnline() 或重新 registerNodes()。
     DispatchOutcome onReceived(const marshland::can::CanFrame& frame) noexcept;
 
     // 按 timings.can_comm_timeout_ms 判定超时；返回本次由 ONLINE 转为 TIMEOUT 的节点数。
@@ -56,7 +60,12 @@ public:
                              std::size_t capacity) noexcept;
 
     // 把某节点标记为故障（例如设备上报错误状态；错误码语义归 ATOM-05）。
+    // 故障为粘滞状态，需显式 markOnline() 才能解除。
     bool markFault(std::uint32_t node_id) noexcept;
+
+    // 显式解除某节点的故障（返回其是否原处于 FAULT）。
+    // 调用方必须是授权路径（故障清除流程），不得由普通反馈路径隐式调用。
+    bool markOnline(std::uint32_t node_id, std::uint64_t now_us) noexcept;
 
     const CanRuntimeConfig& config() const noexcept { return config_; }
 

@@ -115,6 +115,13 @@ struct CanIoResult final {
 // 注意：状态**不承载反馈字段**。ATOM-04 只维护"是否按 200 ms 收到该节点帧"，
 // 反馈字段解析归 ATOM-05。
 // ---------------------------------------------------------------------------
+// 状态语义（必须与实现一致）：
+//   UNKNOWN  初始化后尚未收到任何反馈
+//   ONLINE   已收到反馈且在 timing.can_comm_timeout_ms 内持续收到
+//   TIMEOUT  曾在线但超过阈值未收到反馈
+//   FAULT    **粘滞终态**：设备上报/上层判定的故障。普通反馈或超时轮询都不得
+//            把它改回 ONLINE；只有重新初始化（registerNodes）或显式 markOnline
+//            才能解除，以保证"故障清除需经授权流程"这一不变量。
 enum class CanNodeState : std::uint8_t {
     UNKNOWN = 0,
     ONLINE,
@@ -197,14 +204,20 @@ public:
     CanNodeStatusStore& operator=(const CanNodeStatusStore&) = delete;
     ~CanNodeStatusStore() = default;
 
+    // 复制至多 capacity 个节点，**返回实际复制的元素个数**。
+    // 调用方按返回值遍历是安全的；已登记节点总数用 size() 查询。
+    // output == nullptr 或 capacity == 0 时安全返回 0，不解引用空指针。
     std::size_t snapshot(CanNodeStatus* output, std::size_t capacity) const noexcept
     {
+        if (output == nullptr || capacity == 0U) {
+            return 0U;
+        }
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::size_t count = count_ < capacity ? count_ : capacity;
-        for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t copied = count_ < capacity ? count_ : capacity;
+        for (std::size_t i = 0; i < copied; ++i) {
             output[i] = nodes_[i];
         }
-        return count_;
+        return copied;
     }
 
     std::size_t size() const noexcept

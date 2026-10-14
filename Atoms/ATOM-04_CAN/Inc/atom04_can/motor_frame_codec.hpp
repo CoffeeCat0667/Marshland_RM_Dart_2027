@@ -26,6 +26,7 @@ std::int16_t decodeBigEndianInt16(const std::uint8_t* source) noexcept;
 
 // ---- 帧构建 ---------------------------------------------------------------
 // frame_id 必须为 0x200 或 0x1FF，否则返回 PARAM_INVALID 且不修改 out。
+// 无对应 CAN 节点的保留槽位（0x1FF 的 slot2/slot3）恒编码为 0x0000。
 marshland::can::CanError buildControlFrame(std::uint32_t frame_id,
                                            const MotorSlotValues& currents,
                                            marshland::can::CanFrame& out) noexcept;

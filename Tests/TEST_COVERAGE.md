@@ -23,7 +23,11 @@
    - 测试 ATOM-15 (ConfigStore) 核心功能
    - 测试配置加载、查询和并发访问
 
-4. **marshland_integration_tests** - 集成测试（新增）
+4. **marshland_atom04_tests** - CAN/SocketCAN 模块测试（新增）
+   - 测试 ATOM-04 帧编解码、分派、节点状态、配置校验
+   - 测试力矩输出门控（零力矩/控制互斥）与发送结果回传
+
+5. **marshland_integration_tests** - 集成测试（新增）
    - 测试完整启动流程
    - 测试 ATOM 依赖关系
    - 测试 6 电机配置
@@ -69,6 +73,30 @@
 | `config.store_thread_safety` | 并发访问安全性 |
 | `config.store_schema_version` | Schema 版本验证 |
 
+### ATOM-04 CAN 测试（9 个）
+
+| 测试用例 | 覆盖范围 |
+|---------|---------|
+| `can.slot_contract` | 0x200/0x1FF 槽位映射（编译期 static_assert + 运行期） |
+| `can.big_endian_codec` | int16 大端序编解码（含 -1、INT16_MIN 边界） |
+| `can.control_frame` | 控制帧构造、保留槽强制清零、非法 ID 拒绝 |
+| `can.zero_torque_frame` | 零力矩帧 8 字节全零、非法 ID 拒绝 |
+| `can.receive_validation` | DLC!=8 拒绝（缺陷 #4）、未识别 ID 不投递 |
+| `can.node_state_transitions` | ONLINE/TIMEOUT/FAULT 粘滞（缺陷 #5）、t=0 帧不误判 |
+| `can.snapshot_semantics` | 快照返回实际复制数、空指针/零容量安全（缺陷 #7） |
+| `can.config_validation` | 配置严格校验、六节点完整性（缺陷 #6）、失败不部分提交 |
+| `can.torque_output_gating` | 默认零力矩 fail-safe、模式互斥、发送失败回传（缺陷 #1/#2） |
+
+### ATOM-04 (CAN/SocketCAN)
+
+- 电机控制帧槽位映射（0x200: 0x201~0x204；0x1FF: 0x205~0x206，保留槽恒 0）
+- 大端序编解码与 int16 边界
+- 零力矩帧严格 8 字节全零
+- 接收侧 DLC 校验、未识别 ID 与未登记节点不投递
+- 节点状态迁移动力学：UNKNOWN/ONLINE/TIMEOUT/FAULT 粘滞不变量
+- 力矩输出门控：未授权时只发零力矩（fail-safe），授权后才发控制量且两者互斥
+- 发送结果诚实回传，失败不虚报成功
+
 ### 集成测试（7 个）
 
 | 测试用例 | 覆盖范围 |
@@ -92,8 +120,9 @@
 - **ATOM-01/02 + AppCoordinator**: 31 个（原有）
 - **ATOM-03 (SBUS)**: 12 个（新增）
 - **ATOM-15 (Config)**: 15 个（新增）
+- **ATOM-04 (CAN)**: 9 个（新增）
 - **Integration**: 7 个（新增）
-- **总计**: **65 个测试用例**
+- **总计**: **74 个测试用例**
 
 ---
 
@@ -148,7 +177,7 @@
 ```bash
 cd cmake-build-ubuntu-arm
 cmake -DMARSHLAND_BUILD_TESTS=ON ..
-cmake --build . --target marshland_atom03_tests marshland_atom15_tests marshland_integration_tests
+cmake --build . --target marshland_atom03_tests marshland_atom15_tests marshland_atom04_tests marshland_integration_tests
 ```
 
 ### 运行所有测试
@@ -169,6 +198,9 @@ ctest --output-on-failure
 
 # ATOM-15 测试
 ./marshland_atom15_tests config.store_load_valid
+
+# ATOM-04 测试
+./marshland_atom04_tests can.torque_output_gating
 
 # 集成测试
 ./marshland_integration_tests integration.full_startup

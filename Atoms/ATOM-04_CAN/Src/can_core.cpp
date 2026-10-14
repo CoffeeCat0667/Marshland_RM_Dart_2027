@@ -65,7 +65,9 @@ bool CanCore::start(const CanRuntimeConfig& config, std::string& error_detail) n
     if (running_.load(std::memory_order_acquire)) {
         return true;  // 幂等
     }
-    if (config.motor_count == 0U || config.rx_period_ms <= 0 || config.tx_period_ms <= 0 ||
+    // 缺陷 #6：必须 6 个节点全部登记，否则零力矩覆盖不完整，不得进入运行态。
+    if (config.motor_count != marshland::can::kMaxMotorNodes ||
+        config.rx_period_ms <= 0 || config.tx_period_ms <= 0 ||
         config.comm_timeout_ms <= 0 || config.zero_torque_period_ms <= 0) {
         error_detail = "can runtime config is incomplete (motor table or timing periods)";
         return false;
@@ -176,7 +178,7 @@ void CanCore::publishNodeEvent(const CanEvent& event) noexcept
     publishEvent(event);
 }
 
-void CanCore::sendLatchedFrames() noexcept
+CanError CanCore::sendLatchedFrames() noexcept
 {
     std::array<MotorSlotValues, marshland::can::kMotorControlFrameCount> snapshot{};
     {
@@ -184,14 +186,24 @@ void CanCore::sendLatchedFrames() noexcept
         snapshot = latched_;
     }
 
+    CanError first_error = CanError::OK;
+
     for (const std::uint32_t frame_id : kControlledFrameIds) {
         CanFrame frame{};
-        if (buildControlFrame(frame_id, snapshot[frameIndex(frame_id)], frame) != CanError::OK) {
+        const CanError built = buildControlFrame(frame_id, snapshot[frameIndex(frame_id)], frame);
+        if (built != CanError::OK) {
+            if (first_error == CanError::OK) {
+                first_error = built;
+            }
             continue;
         }
         const CanIoResult sent = dependencies_.transport.send(frame);
         if (sent) {
             continue;
+        }
+
+        if (first_error == CanError::OK) {
+            first_error = sent.error;   // 真实失败结果必须回传调用方，不得虚报成功
         }
 
         CanEvent event{};
@@ -209,6 +221,8 @@ void CanCore::sendLatchedFrames() noexcept
             latched_[frameIndex(frame_id)][slot] = 0;
         }
     }
+
+    return first_error;
 }
 
 marshland::can::CanBusStatus CanCore::snapshotBusStatus() const noexcept
@@ -293,23 +307,28 @@ void CanCore::transmitLoop() noexcept
     while (running_.load(std::memory_order_acquire)) {
         const auto now = Clock::now();
 
-        // 安全优先：零力矩帧总是允许发送（Design/Config.md §15 安全动作例外）。
-        if (now >= next_zero_torque) {
-            (void)sendZeroTorque();
-            next_zero_torque += zero_torque_period;
-            if (next_zero_torque <= now) {
-                next_zero_torque = now + zero_torque_period;  // 超期后重新对齐，避免追赶风暴
-            }
-        }
+        // 缺陷 #1 修复：零力矩帧与控制帧共用同一对 CAN ID，二者**互斥**。
+        // 每个周期只执行当前授权模式对应的那一种，绝不同时发送。
+        // 模式由安全状态显式切换，默认 ZERO_TORQUE（fail-safe）。
+        const marshland::can::TorqueOutputMode mode =
+            torque_mode_.load(std::memory_order_acquire);
 
-        if (now >= next_control) {
-            // 缺陷 D3 修复：控制帧周期**必须真正发送已锁存的槽位值**。
-            // 初值全 0 即 Config.md §6.2 的零力矩帧；一旦 ATOM-05 锁存控制量，
-            // 本周期发送的就是控制帧，而不会被零力矩帧覆盖。
-            sendLatchedFrames();
-            next_control += control_period;
-            if (next_control <= now) {
-                next_control = now + control_period;
+        const auto& period = (mode == marshland::can::TorqueOutputMode::ZERO_TORQUE)
+                                 ? zero_torque_period
+                                 : control_period;
+        auto& next_deadline = (mode == marshland::can::TorqueOutputMode::ZERO_TORQUE)
+                                  ? next_zero_torque
+                                  : next_control;
+
+        if (now >= next_deadline) {
+            if (mode == marshland::can::TorqueOutputMode::ZERO_TORQUE) {
+                (void)sendZeroTorque();
+            } else {
+                (void)sendLatchedFrames();
+            }
+            next_deadline += period;
+            if (next_deadline <= now) {
+                next_deadline = now + period;  // 超期后重新对齐，避免追赶风暴
             }
         }
 
@@ -351,8 +370,24 @@ void CanCore::forceZeroCurrents() noexcept
 
 CanError CanCore::flushLatchedFrames() noexcept
 {
-    sendLatchedFrames();
-    return CanError::OK;
+    // 缺陷 #2 修复：绝不虚报成功。按当前模式发送并把真实结果回传。
+    if (torque_mode_.load(std::memory_order_acquire) ==
+        marshland::can::TorqueOutputMode::ZERO_TORQUE) {
+        return sendZeroTorque();
+    }
+    return sendLatchedFrames();
+}
+
+void CanCore::setTorqueOutputMode(marshland::can::TorqueOutputMode mode) noexcept
+{
+    // 切换前先清零锁存控制量：避免授权瞬间把上一次的残余控制量送到总线。
+    forceZeroCurrents();
+    torque_mode_.store(mode, std::memory_order_release);
+}
+
+marshland::can::TorqueOutputMode CanCore::torqueOutputMode() const noexcept
+{
+    return torque_mode_.load(std::memory_order_acquire);
 }
 
 CanError CanCore::sendZeroTorque() noexcept

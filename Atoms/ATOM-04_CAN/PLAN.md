@@ -1,8 +1,8 @@
 # ATOM-04_CAN 实现方案
 
-> 状态：**已实施代码，通过静态/形式化验证、aarch64 交叉编译与 ASan/UBSan；已过一轮代码评审
-> 并修复 7 项缺陷（见 §14）。未在目标 ARM 主机上联调。**
-> 更新日期：2026-10-12（评审修复 v1.1）
+> 状态：**已实施代码，通过静态/形式化验证、aarch64 交叉编译与 ASan/UBSan；已过两轮代码评审
+> 并累计修复 17 项缺陷（§14 第一轮 8 项、§15 第二轮 10 项）。未在目标 ARM 主机上联调。**
+> 更新日期：2026-10-12（第二轮评审修复 v1.2）
 > 验证方式：`Atoms/ATOM-04_CAN/.verify_atom04.sh`（语法/警告门、SocketCAN 头检查、
 > aarch64 目标编译、逻辑测试执行、依赖方向检查），5/5 通过。
 > 接入说明：`Rule/ATOM4ConnectProject.md`。
@@ -276,3 +276,67 @@ ASan+UBSan 全量测试、以及针对发送/超时路径的定向代码走查�
   零力矩发送失败产生**恰好 2 条** `ZERO_TORQUE_FAILED` 事件、`stop()` 幂等。
 - `testDispatchAndNodeStates` 扩展：`timestamp_us == 0` 的真实帧不得被判超时；
   从未收到反馈的节点保持 `UNKNOWN` 且不被超时轮询处理。
+
+---
+
+## 15. 第二轮代码评审与缺陷修复（2026-10-12）
+
+评审来源：外部逐行复核（10 条），本次逐条复现并修复。验证：`.verify_atom04.sh`
+（严格告警 + aarch64 + 9 个具名用例）与 `.sanitize_atom04.sh`（ASan/UBSan 全用例）。
+
+### 15.1 缺陷与修复
+
+| ID | 级别 | 缺陷 | 影响 | 修复 |
+|---|---|---|---|---|
+| F1 | **P0** | TX 线程每周期**无条件**发送零力矩帧 | 零力矩帧与控制帧共用同一对 CAN ID，稳态**逐帧交替**：实测 300 ms 内 15 个控制帧 + 15 个全零帧。等效每个周期给电机发一次零电流命令，**电机无法连续出力** | 新增 `TorqueOutputMode` 门控（默认 `ZERO_TORQUE` fail-safe）；每周期**只执行当前模式**，两模式互斥；切换时清零锁存控制量 |
+| F2 | **P0** | `flushLatchedFrames()` 固定返回 `CanError::OK` | 违反"发送失败不得虚报成功"；ATOM-05/安全模块无法判断电流是否写入内核 | `sendLatchedFrames()` 改为返回 `CanError` 并记录首个失败；`flushLatchedFrames()` 按模式透传真实结果 |
+| F3 | P1 | 0x1FF 的 slot2/slot3 未强制清零 | 可发出虚构的 0x207/0x208 数据 | `buildControlFrame` 对**无对应 CAN 节点**的槽位恒定编码 `0x0000` |
+| F4 | P1 | 接收侧只校验 CAN ID，不校验 DLC | 截断/损坏帧被当作有效心跳刷新 ONLINE 并投递给 ATOM-05 | `onReceived` 前置 `dlc != 8 -> FRAME_INVALID`，不刷新状态、不投递 |
+| F5 | P1 | FAULT 不是终态，后续反馈即恢复 ONLINE | 与公共契约"FAULT 不可被普通路径覆盖"矛盾；故障可被隐式清除 | FAULT 改为粘滞：仍计数并转发帧（否则 ATOM-05 看不到恢复尝试），但状态不被反馈或超时轮询改写；新增 `markOnline()` 显式解除 |
+| F6 | P1 | 配置只含部分电机即可启动 | `Design/Config.md` §6.2 要求全部 6 个电机纳入零力矩覆盖；缺失电机永远收不到安全帧 | 强制**恰好 6 个节点**且构成 `0x201`~`0x206` 完整集合；`CanCore::start` 二次防御 |
+| F7 | P1 | `snapshot()` 返回登记总数而非实际复制数；`output==nullptr && capacity>0` 解引用空指针 | 调用方按返回值遍历会**越界读**；空指针为 UB | 改为返回实际复制数 + 空指针/零容量安全返回 0；新增 `can.snapshot_semantics` 用例 |
+| F8 | P1 | BUS_OFF 由 errno 粗略猜测，且未订阅错误帧 | `Design/Config.md` 验收条件"区分 BUS_OFF 与总线错误"实际未满足 | 订阅 `CAN_RAW_ERR_FILTER = CAN_ERR_BUSOFF`；接收侧识别 `CAN_ERR_FLAG`，`CAN_ERR_BUSOFF -> BUS_OFF`，其余错误帧按 DISCARD 丢弃；`ENETDOWN/ENODEV` 等改归 `BUS_ERROR`（接口不可达 ≠ 控制器 bus-off） |
+| F9 | P1 | CMake 未链接 `Marshland::PublicHeaders` | 公共契约依赖未进入 CMake 依赖图 | 补 `if(TARGET Marshland::PublicHeaders)` 链接块（与 ATOM-03/15 同构）。注：19 个模块中仅 2 个原有此块，属模板级欠账 |
+| F10 | P1 | 模块目录内存在 `main()` 测试入口 | 违反"ATOM 目录不出现 main"；`.verify` 只扫 `Src` 故漏检 | 测试迁至仓库 `Tests/Atom04CanTests.cpp`，按既有约定改为**具名用例 + Check 抛异常**；顶层 CMake 注册 `marshland_atom04_tests` 与 9 个 CTest 用例；`.verify` 增加"模块内无 main / 无 Tests 目录"检查 |
+
+### 15.2 拒绝的一处越界要求
+
+评审第 6 条另要求校验 `bus`/`role`/控制模式等字段与应用一致。**未采纳**：
+`role` 是 ATOM-05 的业务语义，`bus` 是接口绑定，由 CAN 传输层校验会让模块越权解释
+业务字段（`Rule/AtomIntegration.md` §2.1 禁止内核依赖业务语义）。仅采纳其
+"六节点完整性"部分——那有 `Design/Config.md` §6.2 的直接依据。
+
+### 15.3 修复后验证
+
+| 项 | 结果 |
+|---|---|
+| 基础告警门（`-Wall -Wextra -Wpedantic -Werror`） | 6/6 通过 |
+| 严格告警（+ `-Wshadow -Wconversion -Wsign-conversion -Wuseless-cast -Wformat=2 -Wnull-dereference -Wold-style-cast -Wcast-qual -Wswitch-enum`） | 6/6 **零输出** |
+| aarch64 交叉编译（`aarch64-linux-gnu-g++ -O2 -c`） | 6/6 通过 |
+| 具名用例 | 9/9 通过 |
+| ASan + UBSan（9 个用例全部） | 9/9 通过，0 失败 |
+| 结构边界（无 main / 无模块内 Tests / 无横向依赖 / CMake 已链接公共头） | 4/4 通过 |
+
+### 15.4 F1 修复的前后实测对比
+
+同一探针（20 ms 周期、锁存电机1=1000 mA、稳态采样 300 ms）：
+
+```text
+修复前（无条件发零力矩）: 0x200 全零帧=15  非零帧=15   <- 逐帧交替，电机无法连续出力
+修复后 默认 ZERO_TORQUE  : 0x200 全零帧=15  非零帧=0    <- fail-safe，只发安全帧
+修复后 授权 CONTROL      : 0x200 全零帧=0   非零帧=15   <- 授权后只发控制帧
+```
+
+### 15.5 新增/变更的公共契约
+
+- `CanTypes.hpp`：`CanNodeStatusStore::snapshot()` 语义更正（返回实际复制数）；
+  `CanNodeState` 明确 FAULT 为粘滞终态。
+- `CanInterfaces.hpp`：新增 `TorqueOutputMode`（`ZERO_TORQUE` / `CONTROL`）。
+- 破坏性变更：**无**（`latchMotorCurrents` 等 1.1 已引入的接口保持不变）。
+
+### 15.6 仍未闭环
+
+- 未在真实 CAN 总线上验证 `CAN_ERR_BUSOFF` 的实际到达行为（无硬件）。
+- TSan 在 WSL 下无法运行（环境 ASLR 限制），线程安全仍只有 ASan/UBSan + 互斥锁走查背书。
+- 顶层 `NewVersion/CMakeLists.txt` 引用的 `marsland_app` 目标不存在，整树 `cmake` 配置仍无法完成；
+  本模块与测试目标均已通过独立 aarch64 编译验证。

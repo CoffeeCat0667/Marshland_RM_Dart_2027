@@ -115,6 +115,7 @@ const char* kTestConfig = R"({
     "feed_to_reload_lower_delay_s": 2,
     "fire_angle_hold_ms": 100,
     "sbus_loss_timeout_ms": 200,
+    "can_comm_timeout_ms": 200,
     "charge_time_s": 30,
     "charge_max_action_ms": 30,
     "force_time_s": 30,
