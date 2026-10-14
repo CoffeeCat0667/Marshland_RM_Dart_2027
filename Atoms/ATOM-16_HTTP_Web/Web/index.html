@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Marshland · 飞镖控制面板</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <div class="scanline" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-text">
+        <h1>MARSHLAND</h1>
+        <span>DART CONTROL · ATOM-16</span>
+      </div>
+    </div>
+    <div class="conn">
+      <span class="conn-dot" id="connDot"></span>
+      <span id="connText">未连接</span>
+    </div>
+  </header>
+
+  <main class="grid">
+
+    <!-- 系统状态 -->
+    <section class="card span-2">
+      <div class="card-title"><span class="bar"></span>系统状态</div>
+      <div class="stat-grid">
+        <div class="stat">
+          <label>系统模式</label>
+          <div class="stat-value accent" id="sysMode">STANDBY</div>
+        </div>
+        <div class="stat">
+          <label>控制源</label>
+          <div class="stat-value" id="ctrlSrc">WEB</div>
+        </div>
+        <div class="stat">
+          <label>初始化</label>
+          <div class="stat-value ok" id="inited">已完成</div>
+        </div>
+        <div class="stat">
+          <label>停止发射</label>
+          <div class="stat-value warn" id="stopFire">已置位</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 自动流程 -->
+    <section class="card span-2">
+      <div class="card-title"><span class="bar"></span>自动流程</div>
+      <div class="autofire">
+        <div class="af-state">
+          <label>流程阶段</label>
+          <div class="stat-value accent" id="afState">IDLE</div>
+        </div>
+        <div class="shots" id="shots">
+          <div class="shot" data-i="1"><i></i><span>1</span></div>
+          <div class="shot" data-i="2"><i></i><span>2</span></div>
+          <div class="shot" data-i="3"><i></i><span>3</span></div>
+          <div class="shot" data-i="4"><i></i><span>4</span></div>
+        </div>
+        <div class="af-track"><div class="af-fill" id="afFill"></div></div>
+      </div>
+    </section>
+
+    <!-- 机构状态 -->
+    <section class="card">
+      <div class="card-title"><span class="bar"></span>机构状态</div>
+      <ul class="mech-list">
+        <li><span>蓄力</span><em class="pill ok">就绪</em></li>
+        <li><span>变力</span><em class="pill ok">0 rpm</em></li>
+        <li><span>换弹</span><em class="pill idle">下限位</em></li>
+        <li><span>供弹</span><em class="pill idle">待命</em></li>
+        <li><span>YAW</span><em class="pill warn">未到位</em></li>
+      </ul>
+    </section>
+
+    <!-- 链路状态 -->
+    <section class="card">
+      <div class="card-title"><span class="bar"></span>链路状态</div>
+      <ul class="mech-list">
+        <li><span>CAN 总线</span><em class="pill ok">在线</em></li>
+        <li><span>SBUS</span><em class="pill err">失联</em></li>
+        <li><span>视觉</span><em class="pill ok">在线</em></li>
+        <li><span>IIC / PCA9685</span><em class="pill ok">在线</em></li>
+        <li><span>活动故障</span><em class="pill ok">0</em></li>
+      </ul>
+    </section>
+
+    <!-- 手动控制 -->
+    <section class="card span-2">
+      <div class="card-title"><span class="bar"></span>手动控制<span class="badge">仅手动/调试模式</span></div>
+      <div class="btn-grid">
+        <button class="ctl">蓄力启动</button>
+        <button class="ctl">蓄力停止</button>
+        <button class="ctl">蓄力回零</button>
+        <button class="ctl">换弹抬起</button>
+        <button class="ctl">换弹下降</button>
+        <button class="ctl">供弹一次</button>
+        <button class="ctl danger">发射一次</button>
+        <button class="ctl warn-outline">清除停止标志</button>
+      </div>
+    </section>
+
+    <!-- 急停 -->
+    <section class="card span-2 estop-card">
+      <div class="card-title"><span class="bar"></span>软件急停</div>
+      <div class="estop-row">
+        <button class="estop" id="estopBtn">
+          <span class="ring"></span>
+          <span class="ring r2"></span>
+          <span class="estop-label">ESTOP</span>
+        </button>
+        <p class="estop-note">触发后锁存全部执行器<br>解除须经人工确认（confirm=true）</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="logbar">
+    <span class="log-dot"></span>
+    <span id="logText">系统待机，等待操作…</span>
+    <span class="log-time" id="logTime">--:--:--</span>
+  </footer>
+
+  <script type="module" src="assets/js/main.js"></script>
+</body>
+</html>

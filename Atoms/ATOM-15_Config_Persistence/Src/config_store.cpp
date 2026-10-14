@@ -4,9 +4,11 @@
 #include <cstdio>
 #include <cstdint>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <regex>
 #include <shared_mutex>
 #include <sstream>
 #include <string_view>
@@ -110,21 +112,121 @@ void diagnostic(std::vector<ConfigDiagnostic>& d, std::string key, std::string m
 bool requiredObject(const JsonValue* v, const char* key, std::vector<ConfigDiagnostic>& d) { if(!v) { diagnostic(d,key,"missing required object"); return false; } if(v->kind!=JsonValue::Kind::Object) { diagnostic(d,key,"expected object"); return false; } return true; }
 bool requiredMember(const JsonValue* object, const char* key, JsonValue::Kind kind, std::vector<ConfigDiagnostic>& d) { const auto v=member(object,key); if(!v) { diagnostic(d,key,"missing required value"); return false; } if(v->kind==JsonValue::Kind::Null) { diagnostic(d,key,"value is not implemented"); return false; } if(kind==JsonValue::Kind::Integer ? !integer(*v) : v->kind!=kind) { diagnostic(d,key,"invalid type"); return false; } return true; }bool integerRange(const JsonValue* object,const char* key,std::int64_t minimum,std::int64_t maximum,std::vector<ConfigDiagnostic>& d) { const auto v=member(object,key); if(!v) { diagnostic(d,key,"missing required value"); return false; } if(!integer(*v)) { diagnostic(d,key,"invalid type"); return false; } if(v->integer_value<minimum||v->integer_value>maximum) { diagnostic(d,key,"out of range"); return false; } return true; }
 bool nonEmptyString(const JsonValue* object,const char* key,std::vector<ConfigDiagnostic>& d) { const auto v=member(object,key); if(!v) { diagnostic(d,key,"missing required value"); return false; } if(v->kind!=JsonValue::Kind::String||v->string_value.empty()) { diagnostic(d,key,"must be a non-empty string"); return false; } return true; }
+const JsonValue* integerPath(const JsonValue& root, const char* path, std::int64_t minimum,
+                             std::int64_t maximum, std::vector<ConfigDiagnostic>& d) {
+    const auto value=findPath(root,path);
+    if(!value) diagnostic(d,path,"missing required value");
+    else if(!integer(*value)) diagnostic(d,path,"must be an integer");
+    else if(value->integer_value<minimum||value->integer_value>maximum) diagnostic(d,path,"out of range");
+    else return value;
+    return nullptr;
+}
+const JsonValue* stringPath(const JsonValue& root, const char* path,
+                            std::vector<ConfigDiagnostic>& d) {
+    const auto value=findPath(root,path);
+    if(!value) diagnostic(d,path,"missing required value");
+    else if(value->kind!=JsonValue::Kind::String) diagnostic(d,path,"must be a string");
+    else return value;
+    return nullptr;
+}
+void stringEnum(const JsonValue& root, const char* path,
+                std::initializer_list<std::string_view> choices, std::vector<ConfigDiagnostic>& d) {
+    const auto value=stringPath(root,path,d);
+    if(value&&std::find(choices.begin(),choices.end(),value->string_value)==choices.end())
+        diagnostic(d,path,"unsupported enum value");
+}
+const JsonValue* integerPair(const JsonValue& root, const char* path,
+                             std::vector<ConfigDiagnostic>& d) {
+    const auto value=findPath(root,path);
+    if(!value||value->kind!=JsonValue::Kind::Array||value->array_value.size()!=2||
+       !integer(value->array_value[0])||!integer(value->array_value[1])) {
+        diagnostic(d,path,"must contain exactly two integers");
+        return nullptr;
+    }
+    return value;
+}
+void validateServoSettings(const JsonValue& root, std::vector<ConfigDiagnostic>& d) {
+    if(requiredObject(findPath(root,"servo.pca9685"),"servo.pca9685",d)) {
+        static const std::regex devicePattern("^/dev/i2c-[0-9]+$");
+        static const std::regex addressPattern("^0x[0-9A-Fa-f]{2}$");
+        const auto device=stringPath(root,"servo.pca9685.i2c_device",d);
+        if(device&&!std::regex_match(device->string_value,devicePattern))
+            diagnostic(d,"servo.pca9685.i2c_device","expected /dev/i2c-N device path");
+        const auto address=stringPath(root,"servo.pca9685.address",d);
+        if(address) {
+            if(!std::regex_match(address->string_value,addressPattern))
+                diagnostic(d,"servo.pca9685.address","expected 0xNN address");
+            else {
+                const auto number=std::stoul(address->string_value,nullptr,16);
+                if(number<3||number>0x77) diagnostic(d,"servo.pca9685.address","must be a usable 7-bit IIC address (0x03..0x77)");
+            }
+        }
+        integerPath(root,"servo.pca9685.channel_count",16,16,d);
+        integerPath(root,"servo.pca9685.pwm_resolution_bits",12,12,d);
+        const auto frequency=integerPath(root,"servo.pca9685.pwm_frequency_hz",1,INT64_MAX,d);
+        if(frequency) {
+            const double hz=static_cast<double>(frequency->integer_value);
+            // Match the existing ATOM-07 prescale calculation without depending on its private headers.
+            const double prescale=std::round(25000000.0/(4096.0*hz))-1.0;
+            if(hz<24.0||hz>1526.0||prescale<3.0||prescale>255.0)
+                diagnostic(d,"servo.pca9685.pwm_frequency_hz","unsupported PWM frequency or prescale outside 3..255");
+        }
+        const auto range=integerPair(root,"servo.pca9685.channel_range",d);
+        if(range) {
+            const auto low=range->array_value[0].integer_value;
+            const auto high=range->array_value[1].integer_value;
+            if(low<0||high<low||high>=16) diagnostic(d,"servo.pca9685.channel_range","must be ordered within 0..15");
+            if(low>4||high<5) diagnostic(d,"servo.pca9685.channel_range","must include configured FEED/FIRE channels 4 and 5");
+        }
+        stringEnum(root,"servo.pca9685.oe_active_level",{"LOW","HIGH"},d);
+        stringEnum(root,"servo.pca9685.access_mode",{"SERIALIZED"},d);
+        stringEnum(root,"servo.pca9685.task_priority",{"MEDIUM_HIGH"},d);
+        stringEnum(root,"servo.pca9685.error_handling",{"ENTER_FAULT"},d);
+    }
+    if(requiredObject(findPath(root,"servo.model"),"servo.model",d)) {
+        stringPath(root,"servo.model.name",d);
+        stringEnum(root,"servo.model.type",{"180_DEGREE"},d);
+        const auto low=integerPath(root,"servo.model.pulse_min_us",1,INT64_MAX,d);
+        const auto high=integerPath(root,"servo.model.pulse_max_us",1,INT64_MAX,d);
+        if(low&&high&&high->integer_value<=low->integer_value)
+            diagnostic(d,"servo.model.pulse_max_us","must exceed pulse_min_us");
+        const auto range=integerPair(root,"servo.model.angle_range_deg",d);
+        if(range&&(range->array_value[0].integer_value<0||
+                   range->array_value[1].integer_value<=range->array_value[0].integer_value||
+                   range->array_value[1].integer_value>180))
+            diagnostic(d,"servo.model.angle_range_deg","must be increasing within 0..180");
+    }
+    if(requiredObject(findPath(root,"servo.strategy"),"servo.strategy",d)) {
+        const std::pair<const char*,const char*> rules[]={
+            {"servo.strategy.reload_lift_group","USE_LIFT_ANGLES"},
+            {"servo.strategy.reload_lower_group","USE_LOWER_ANGLES"},
+            {"servo.strategy.feed_sequence","ANGLE1_TO_ANGLE2_TO_ANGLE1"},
+            {"servo.strategy.fire_sequence","STANDBY_TO_FIRE_TO_STANDBY"},
+            {"servo.strategy.estop_fire_servo","REJECT_ALL"},
+            {"servo.strategy.estop_other_servos","HOLD"},
+            {"servo.strategy.comm_fault_servos","HOLD"},
+            {"servo.strategy.recovery_other_servos","HOLD"},
+            {"servo.strategy.fire_servo_safe_hold","HOLD_CURRENT"},
+            {"servo.strategy.out_of_range_action","REJECT_AND_WARN"},
+            {"servo.strategy.action_failure_action","FAIL_AND_BLOCK_FIRE"}};
+        for(const auto& [path,value]:rules) stringEnum(root,path,{value},d);
+    }
+}
 bool isReservedKey(std::string_view key) noexcept {
     if(key.size()!=12||key.substr(0,9)!="reserved_") return false;
     return key[9]>='0'&&key[9]<='9'&&key[10]>='0'&&key[10]<='9'&&key[11]>='0'&&key[11]<='9';
 }
 bool isKnownRootKey(std::string_view key) noexcept {
     if(isReservedKey(key)) return true;
-    for(const auto known: {"schema_version","baseline","mode","timing","motor","can","sbus","persistence","gpio","servo","vision","http","websocket","fault","thread","log"}) if(key==known) return true;
+    for(const auto known: {"schema_version","baseline","mode","timing","motor","charge","force","can","sbus","persistence","gpio","servo","vision","http","websocket","fault","thread","log"}) if(key==known) return true;
     return false;
 }
 bool validate(const JsonValue& root, std::vector<ConfigDiagnostic>& d) {
     if(root.kind!=JsonValue::Kind::Object) { diagnostic(d,"","root must be an object"); return false; }
     for(const auto& [key,value]:root.object_value) if(!isKnownRootKey(key)) diagnostic(d,key,"unknown top-level property");
     const auto schema=member(&root,"schema_version"); if(!schema||!integer(*schema)||schema->integer_value!=1) diagnostic(d,"schema_version","must be integer 1");
-    for(const char* key:{"baseline","mode","timing","motor","can","sbus","persistence"}) if(!member(&root,key)) diagnostic(d,key,"missing required top-level section");
-    requiredObject(member(&root,"baseline"),"baseline",d); requiredObject(member(&root,"mode"),"mode",d); requiredObject(member(&root,"timing"),"timing",d); requiredObject(member(&root,"can"),"can",d); requiredObject(member(&root,"sbus"),"sbus",d); requiredObject(member(&root,"persistence"),"persistence",d);
+    for(const char* key:{"baseline","mode","timing","motor","charge","force","can","sbus","persistence","servo","thread"}) if(!member(&root,key)) diagnostic(d,key,"missing required top-level section");
+    requiredObject(member(&root,"baseline"),"baseline",d); requiredObject(member(&root,"mode"),"mode",d); requiredObject(member(&root,"timing"),"timing",d); requiredObject(member(&root,"charge"),"charge",d); requiredObject(member(&root,"can"),"can",d); requiredObject(member(&root,"sbus"),"sbus",d); requiredObject(member(&root,"persistence"),"persistence",d); requiredObject(member(&root,"servo"),"servo",d); requiredObject(member(&root,"thread"),"thread",d);
     for(const char* key:{"gpio","servo","vision","http","websocket","fault","thread","log"}) if(const auto section=member(&root,key); section&&section->kind!=JsonValue::Kind::Object) diagnostic(d,key,"must be an object");
     const auto motors=member(&root,"motor");
     if(!motors||motors->kind!=JsonValue::Kind::Array||motors->array_value.empty()) diagnostic(d,"motor","must be a non-empty array");
@@ -137,16 +239,71 @@ bool validate(const JsonValue& root, std::vector<ConfigDiagnostic>& d) {
         const auto node=member(&m,"node"); if(node&&integer(*node)) { if(std::find(motorNodes.begin(),motorNodes.end(),node->integer_value)!=motorNodes.end()) diagnostic(d,p+".node","duplicate motor node"); motorNodes.push_back(node->integer_value); }
         const auto pid=member(&m,"pid"); if(pid&&pid->kind==JsonValue::Kind::Object) { for(const char* key:{"kp","ki","kd","integral_limit","output_limit","control_period_ms"}) requiredMember(pid,key,JsonValue::Kind::Integer,d); requiredMember(pid,"enabled",JsonValue::Kind::Boolean,d); const auto period=member(pid,"control_period_ms"); if(period&&integer(*period)&&period->integer_value<=0) diagnostic(d,p+".pid.control_period_ms","must be positive"); }
     }
-    const auto sbus=member(&root,"sbus"); if(sbus&&sbus->kind==JsonValue::Kind::Object) { nonEmptyString(sbus,"serial_device",d); integerRange(sbus,"channel_scale_x",1,10,d); integerRange(sbus,"frame_bytes",25,25,d); integerRange(sbus,"joystick_center",0,2047,d); integerRange(sbus,"valid_min",0,2047,d); integerRange(sbus,"valid_max",0,2047,d); const auto min=member(sbus,"valid_min"); const auto max=member(sbus,"valid_max"); if(min&&max&&integer(*min)&&integer(*max)&&min->integer_value>max->integer_value) diagnostic(d,"sbus.valid_min","must not exceed valid_max"); }
+    const auto charge=member(&root,"charge"); if(charge&&charge->kind==JsonValue::Kind::Object) { requiredMember(charge,"charge_speed_rpm",JsonValue::Kind::Integer,d); requiredMember(charge,"home_speed_rpm",JsonValue::Kind::Integer,d); const auto target=member(charge,"target_range"); if(target&&(!integer(*target)||target->integer_value<=0)) diagnostic(d,"charge.target_range","must be a positive integer"); }
+    const auto force=member(&root,"force"); if(force&&force->kind==JsonValue::Kind::Object) { integerRange(force,"center_deadband_rpm",0,std::numeric_limits<std::int64_t>::max(),d); const auto action=member(force,"center_action"); if(!action||action->kind!=JsonValue::Kind::String||action->string_value!="ZERO_TORQUE") diagnostic(d,"force.center_action","must be ZERO_TORQUE"); }
+    const auto thread=member(&root,"thread"); if(thread&&thread->kind==JsonValue::Kind::Object) { const auto access=member(thread,"iic_access"); if(!access||access->kind!=JsonValue::Kind::String||access->string_value!="SERIALIZED") diagnostic(d,"thread.iic_access","must be SERIALIZED"); const auto priority=member(thread,"iic_priority"); if(!priority||priority->kind!=JsonValue::Kind::String||priority->string_value!="MEDIUM_HIGH") diagnostic(d,"thread.iic_priority","must be MEDIUM_HIGH"); }
+    const auto sbus=member(&root,"sbus"); if(sbus&&sbus->kind==JsonValue::Kind::Object) {
+        nonEmptyString(sbus,"serial_device",d); integerRange(sbus,"channel_scale_x",1,10,d); integerRange(sbus,"frame_bytes",25,25,d); integerRange(sbus,"joystick_center",0,2047,d); integerRange(sbus,"valid_min",0,2047,d); integerRange(sbus,"valid_max",0,2047,d);
+        const auto min=member(sbus,"valid_min"); const auto max=member(sbus,"valid_max"); if(min&&max&&integer(*min)&&integer(*max)&&min->integer_value>max->integer_value) diagnostic(d,"sbus.valid_min","must not exceed valid_max");
+        const auto functions=member(sbus,"functions"); bool overall=false; bool left=false; bool right=false;
+        if(!functions||functions->kind!=JsonValue::Kind::Array) diagnostic(d,"sbus.functions","must be an array containing manual_charge CH2 and manual_charge_left/right CH8/CH9");
+        else for(const auto& item:functions->array_value) if(item.kind==JsonValue::Kind::Object) {
+            const auto name=member(&item,"name"); const auto channel=member(&item,"channel"); if(!name||!channel||name->kind!=JsonValue::Kind::String||channel->kind!=JsonValue::Kind::String) continue;
+            if(name->string_value=="manual_charge"&&channel->string_value=="CH2") overall=true;
+            if(name->string_value=="manual_charge_left"&&channel->string_value=="CH8") left=true;
+            if(name->string_value=="manual_charge_right"&&channel->string_value=="CH9") right=true;
+        }
+        if(!overall) diagnostic(d,"sbus.functions","missing manual_charge -> CH2 mapping"); if(!left) diagnostic(d,"sbus.functions","missing manual_charge_left -> CH8 mapping"); if(!right) diagnostic(d,"sbus.functions","missing manual_charge_right -> CH9 mapping");
+    }
     const auto timing=member(&root,"timing");
     if(timing&&timing->kind==JsonValue::Kind::Object) {
         const auto firstDiagnostic=d.size();
         integerRange(timing,"sbus_receive_period_ms",1,86400000,d);
         integerRange(timing,"sbus_loss_timeout_ms",1,86400000,d);
         integerRange(timing,"can_comm_timeout_ms",1,6000,d);
+        integerRange(timing,"iic_comm_timeout_ms",1,std::numeric_limits<std::int64_t>::max(),d);
+        integerRange(timing,"charge_max_action_ms",1,std::numeric_limits<std::int64_t>::max(),d);
+        integerRange(timing,"charge_home_max_action_ms",1,std::numeric_limits<std::int64_t>::max(),d);
         for(auto i=firstDiagnostic;i<d.size();++i) d[i].key="timing."+d[i].key;
     }
     const auto persistence=member(&root,"persistence"); if(persistence&&persistence->kind==JsonValue::Kind::Object) { for(const char* key:{"file_format","directory","file_name"}) if(!member(persistence,key)) diagnostic(d,std::string("persistence.")+key,"missing required value"); const auto count=member(persistence,"reserved_variable_count"); if(count&&(!integer(*count)||count->integer_value!=100)) diagnostic(d,"persistence.reserved_variable_count","must be integer 100"); }
+    const auto servo=member(&root,"servo");
+    if(servo&&servo->kind==JsonValue::Kind::Object) {
+        validateServoSettings(root,d);
+        const auto exactString=[&](const JsonValue* object,const char* key,const char* path,const char* expected) {
+            const auto value=member(object,key); if(!value||value->kind!=JsonValue::Kind::String) { diagnostic(d,path,"must be a string"); return; } if(value->string_value!=expected) diagnostic(d,path,std::string("must be ")+expected);
+        };
+        const auto pca=member(servo,"pca9685");
+        if(!requiredObject(pca,"servo.pca9685",d)) {}
+        else {
+            nonEmptyString(pca,"i2c_device",d); nonEmptyString(pca,"address",d); integerRange(pca,"channel_count",16,16,d); integerRange(pca,"pwm_resolution_bits",12,12,d); integerRange(pca,"pwm_frequency_hz",1,std::numeric_limits<std::int64_t>::max(),d);
+            exactString(pca,"oe_active_level","servo.pca9685.oe_active_level","LOW"); exactString(pca,"access_mode","servo.pca9685.access_mode","SERIALIZED"); exactString(pca,"task_priority","servo.pca9685.task_priority","MEDIUM_HIGH"); exactString(pca,"error_handling","servo.pca9685.error_handling","ENTER_FAULT");
+            const auto range=member(pca,"channel_range"); if(!range||range->kind!=JsonValue::Kind::Array||range->array_value.size()!=2||!integer(range->array_value[0])||!integer(range->array_value[1])) diagnostic(d,"servo.pca9685.channel_range","must contain exactly two integers"); else if(range->array_value[0].integer_value<0||range->array_value[1].integer_value<range->array_value[0].integer_value||range->array_value[1].integer_value>=16) diagnostic(d,"servo.pca9685.channel_range","must be within 0..15");
+        }
+        const auto model=member(servo,"model");
+        if(!requiredObject(model,"servo.model",d)) {}
+        else {
+            nonEmptyString(model,"name",d); exactString(model,"type","servo.model.type","180_DEGREE"); integerRange(model,"pulse_min_us",1,std::numeric_limits<std::int64_t>::max(),d); integerRange(model,"pulse_max_us",1,std::numeric_limits<std::int64_t>::max(),d); const auto minPulse=member(model,"pulse_min_us"); const auto maxPulse=member(model,"pulse_max_us"); if(minPulse&&maxPulse&&integer(*minPulse)&&integer(*maxPulse)&&maxPulse->integer_value<=minPulse->integer_value) diagnostic(d,"servo.model.pulse_max_us","must exceed pulse_min_us"); const auto angles=member(model,"angle_range_deg"); if(!angles||angles->kind!=JsonValue::Kind::Array||angles->array_value.size()!=2||!integer(angles->array_value[0])||!integer(angles->array_value[1])) diagnostic(d,"servo.model.angle_range_deg","must contain exactly two integers"); else if(angles->array_value[0].integer_value<0||angles->array_value[1].integer_value<=angles->array_value[0].integer_value) diagnostic(d,"servo.model.angle_range_deg","must be an increasing angle range");
+        }
+        const auto strategy=member(servo,"strategy");
+        if(!requiredObject(strategy,"servo.strategy",d)) {}
+        else { exactString(strategy,"reload_lift_group","servo.strategy.reload_lift_group","USE_LIFT_ANGLES"); exactString(strategy,"reload_lower_group","servo.strategy.reload_lower_group","USE_LOWER_ANGLES"); exactString(strategy,"feed_sequence","servo.strategy.feed_sequence","ANGLE1_TO_ANGLE2_TO_ANGLE1"); exactString(strategy,"fire_sequence","servo.strategy.fire_sequence","STANDBY_TO_FIRE_TO_STANDBY"); exactString(strategy,"estop_fire_servo","servo.strategy.estop_fire_servo","REJECT_ALL"); exactString(strategy,"estop_other_servos","servo.strategy.estop_other_servos","HOLD"); exactString(strategy,"comm_fault_servos","servo.strategy.comm_fault_servos","HOLD"); exactString(strategy,"recovery_other_servos","servo.strategy.recovery_other_servos","HOLD"); exactString(strategy,"fire_servo_safe_hold","servo.strategy.fire_servo_safe_hold","HOLD_CURRENT"); exactString(strategy,"out_of_range_action","servo.strategy.out_of_range_action","REJECT_AND_WARN"); exactString(strategy,"action_failure_action","servo.strategy.action_failure_action","FAIL_AND_BLOCK_FIRE"); }
+        const auto channels=member(servo,"channels");
+        if(!channels||channels->kind!=JsonValue::Kind::Array||channels->array_value.size()!=2) diagnostic(d,"servo.channels","must contain exactly FEED and FIRE resources");
+        bool feed=false; bool fire=false;
+        if(channels&&channels->kind==JsonValue::Kind::Array) for(std::size_t i=0;i<channels->array_value.size();++i) {
+            const auto& item=channels->array_value[i]; const auto p="servo.channels["+std::to_string(i)+"]";
+            if(item.kind!=JsonValue::Kind::Object) { diagnostic(d,p,"must be an object"); continue; }
+            const auto mechanism=member(&item,"mechanism"); const auto channel=member(&item,"channel");
+            if(!mechanism||mechanism->kind!=JsonValue::Kind::String) { diagnostic(d,p+".mechanism","must be a string"); continue; }
+            if(!channel||!integer(*channel)||channel->integer_value<0||channel->integer_value>15) { diagnostic(d,p+".channel","must be an integer in 0..15"); continue; }
+            if(mechanism->string_value=="FEED") { if(feed) diagnostic(d,p+".mechanism","duplicate FEED resource"); feed=true; if(channel->integer_value!=4) diagnostic(d,p+".channel","FEED must use PCA9685A channel 4"); const auto id=member(&item,"id"); if(!id||!integer(*id)||id->integer_value!=5) diagnostic(d,p+".id","FEED servo id must be 5"); }
+            else if(mechanism->string_value=="FIRE") { if(fire) diagnostic(d,p+".mechanism","duplicate FIRE resource"); fire=true; if(channel->integer_value!=5) diagnostic(d,p+".channel","FIRE must use PCA9685A channel 5"); const auto id=member(&item,"id"); if(id&&id->kind!=JsonValue::Kind::Null&&!integer(*id)) diagnostic(d,p+".id","FIRE servo id must be integer or null"); }
+            else diagnostic(d,p+".mechanism","must be FEED or FIRE");
+        }
+        if(!feed) diagnostic(d,"servo.channels","missing FEED resource");
+        if(!fire) diagnostic(d,"servo.channels","missing FIRE resource");
+    }
     for(const auto& [key,value]:root.object_value) if(isReservedKey(key)&&(!integer(value)||key<"reserved_001"||key>"reserved_100")) diagnostic(d,key,"reserved variable must be an int32-compatible reserved_001..reserved_100 value");
     return d.empty();
 }
@@ -199,7 +356,7 @@ config::ConfigStatus ConfigStore::getString(const char* key,const char*& data,st
 bool ConfigStore::has(const char* key) const noexcept { try { std::shared_lock lock(impl_->mutex); return impl_->snapshot&&findPath(*impl_->snapshot,key?key:""); } catch(...) { return false; } }
 config::ConfigStatus ConfigStore::getArraySize(const char* key,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(v->kind!=JsonValue::Kind::Array) return config::ConfigStatus::INVALID_TYPE; size=v->array_value.size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 
-template<class T> config::ConfigStatus arrayField(const JsonValue& root,const char* key,std::uint64_t index,const char* field,T& out) noexcept { const auto a=findPath(root,key?key:""); if(!a) return config::ConfigStatus::MISSING; if(a->kind!=JsonValue::Kind::Array||index>=a->array_value.size()) return config::ConfigStatus::OUT_OF_RANGE; const auto v=member(&a->array_value[static_cast<std::size_t>(index)],field?field:""); if(!v) return config::ConfigStatus::MISSING; if constexpr(std::is_same_v<T,std::int64_t>) { if(!integer(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->integer_value; } else if constexpr(std::is_same_v<T,double>) { if(!number(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->kind==JsonValue::Kind::Integer?static_cast<double>(v->integer_value):v->number_value; } else { if(v->kind!=JsonValue::Kind::Boolean) return config::ConfigStatus::INVALID_TYPE; out=v->boolean_value; } return config::ConfigStatus::OK; }
+template<class T> config::ConfigStatus arrayField(const JsonValue& root,const char* key,std::uint64_t index,const char* field,T& out) noexcept { const auto a=findPath(root,key?key:""); if(!a) return config::ConfigStatus::MISSING; if(a->kind!=JsonValue::Kind::Array||index>=a->array_value.size()) return config::ConfigStatus::OUT_OF_RANGE; const auto& element=a->array_value[static_cast<std::size_t>(index)]; const auto v=(field&&*field)?member(&element,field):&element; if(!v) return config::ConfigStatus::MISSING; if constexpr(std::is_same_v<T,std::int64_t>) { if(!integer(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->integer_value; } else if constexpr(std::is_same_v<T,double>) { if(!number(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->kind==JsonValue::Kind::Integer?static_cast<double>(v->integer_value):v->number_value; } else { if(v->kind!=JsonValue::Kind::Boolean) return config::ConfigStatus::INVALID_TYPE; out=v->boolean_value; } return config::ConfigStatus::OK; }
 config::ConfigStatus ConfigStore::getIntAt(const char* key,std::uint64_t index,const char* field,std::int64_t& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; return arrayField(*impl_->snapshot,key,index,field,out); } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 config::ConfigStatus ConfigStore::getDoubleAt(const char* key,std::uint64_t index,const char* field,double& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; return arrayField(*impl_->snapshot,key,index,field,out); } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 config::ConfigStatus ConfigStore::getBoolAt(const char* key,std::uint64_t index,const char* field,bool& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; return arrayField(*impl_->snapshot,key,index,field,out); } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }

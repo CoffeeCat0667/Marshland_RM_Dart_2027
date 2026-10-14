@@ -116,8 +116,10 @@ const char* kTestConfig = R"({
     "fire_angle_hold_ms": 100,
     "sbus_loss_timeout_ms": 200,
     "can_comm_timeout_ms": 200,
+    "iic_comm_timeout_ms": 200,
     "charge_time_s": 30,
-    "charge_max_action_ms": 30,
+    "charge_max_action_ms": 30000,
+    "charge_home_max_action_ms": 25000,
     "force_time_s": 30,
     "feed_max_action_ms": 1000,
     "force_max_action_ms": 30000,
@@ -236,6 +238,15 @@ const char* kTestConfig = R"({
       }
     }
   ],
+  "charge": {
+    "charge_speed_rpm": 5000,
+    "home_speed_rpm": 5000,
+    "target_range": 15000
+  },
+  "force": {
+    "center_deadband_rpm": 0,
+    "center_action": "ZERO_TORQUE"
+  },
   "can": {
     "interface": "CAN0",
     "bitrate": "1Mbps",
@@ -283,15 +294,59 @@ const char* kTestConfig = R"({
       {"name": "auto_mode", "channel": "CH5", "signal_type": "SWITCH"},
       {"name": "estop_trigger", "channel": "CH6", "signal_type": "SWITCH"},
       {"name": "manual_charge", "channel": "CH2", "signal_type": "JOYSTICK"},
+      {"name": "manual_charge_left", "channel": "CH8", "signal_type": "JOYSTICK"},
+      {"name": "manual_charge_right", "channel": "CH9", "signal_type": "JOYSTICK"},
       {"name": "manual_reload", "channel": "CH3", "signal_type": "JOYSTICK"},
       {"name": "manual_yaw", "channel": "CH4", "signal_type": "JOYSTICK"},
       {"name": "manual_fire", "channel": "CH7", "signal_type": "SWITCH"}
     ]
   },
+  "servo": {
+    "pca9685": {
+      "i2c_device": "/dev/i2c-7",
+      "address": "0x40",
+      "channel_count": 16,
+      "pwm_resolution_bits": 12,
+      "pwm_frequency_hz": 50,
+      "channel_range": [0, 15],
+      "oe_active_level": "LOW",
+      "access_mode": "SERIALIZED",
+      "task_priority": "MEDIUM_HIGH",
+      "error_handling": "ENTER_FAULT"
+    },
+    "model": {
+      "name": "MG996R",
+      "type": "180_DEGREE",
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "angle_range_deg": [0, 180]
+    },
+    "channels": [
+      {"id": 5, "mechanism": "FEED", "channel": 4, "standby_deg": 20, "action_deg": 30},
+      {"id": null, "mechanism": "FIRE", "channel": 5, "standby_deg": null, "action_deg": null}
+    ],
+    "strategy": {
+      "reload_lift_group": "USE_LIFT_ANGLES",
+      "reload_lower_group": "USE_LOWER_ANGLES",
+      "feed_sequence": "ANGLE1_TO_ANGLE2_TO_ANGLE1",
+      "fire_sequence": "STANDBY_TO_FIRE_TO_STANDBY",
+      "estop_fire_servo": "REJECT_ALL",
+      "estop_other_servos": "HOLD",
+      "comm_fault_servos": "HOLD",
+      "recovery_other_servos": "HOLD",
+      "fire_servo_safe_hold": "HOLD_CURRENT",
+      "out_of_range_action": "REJECT_AND_WARN",
+      "action_failure_action": "FAIL_AND_BLOCK_FIRE"
+    }
+  },
+  "thread": {
+    "iic_access": "SERIALIZED",
+    "iic_priority": "MEDIUM_HIGH"
+  },
   "persistence": {
     "file_format": "JSON",
     "directory": "./Config",
-    "file_name": "dart_control.json",
+    "file_name": "dart_control.nlohmann",
     "write_mode": "PLAIN_FILE_WRITE",
     "power_loss_protection": false,
     "corruption_recovery": false,
@@ -319,7 +374,7 @@ namespace marshland::tests {
 void TestIntegrationFullStartup()
 {
     // Create temporary config file
-    const char* temp_config = "test_integration_config.json";
+    const char* temp_config = "test_integration_config.nlohmann";
     {
         std::ofstream out(temp_config);
         out << kTestConfig;
@@ -400,7 +455,7 @@ void TestIntegrationConfigLoadFailure()
     marshland::atom15::ConfigStore config_store;
 
     RuntimeContext context{};
-    context.configuration_path = "nonexistent_config_file.json";
+    context.configuration_path = "nonexistent_config_file.nlohmann";
     RuntimeCoordinator runtime{context};
 
     auto config_adapter = std::make_unique<marshland::atom15::LifecycleAdapter>(config_store);
@@ -427,7 +482,7 @@ void TestIntegrationConfigLoadFailure()
 void TestIntegrationAtom15BeforeAtom03()
 {
     // Verify ATOM-15 runs before ATOM-03 (dependency ordering)
-    const char* temp_config = "test_integration_order.json";
+    const char* temp_config = "test_integration_order.nlohmann";
     {
         std::ofstream out(temp_config);
         out << kTestConfig;
@@ -476,7 +531,7 @@ void TestIntegrationAtom15BeforeAtom03()
 
 void TestIntegrationMotorConfig6Motors()
 {
-    const char* temp_config = "test_integration_motors.json";
+    const char* temp_config = "test_integration_motors.nlohmann";
     {
         std::ofstream out(temp_config);
         out << kTestConfig;
@@ -516,7 +571,7 @@ void TestIntegrationMotorConfig6Motors()
 
 void TestIntegrationCanZeroTorqueFrames()
 {
-    const char* temp_config = "test_integration_can.json";
+    const char* temp_config = "test_integration_can.nlohmann";
     {
         std::ofstream out(temp_config);
         out << kTestConfig;
@@ -545,7 +600,7 @@ void TestIntegrationCanZeroTorqueFrames()
 
 void TestIntegrationRuntimeContextTransfer()
 {
-    const char* temp_config = "test_integration_context.json";
+    const char* temp_config = "test_integration_context.nlohmann";
     {
         std::ofstream out(temp_config);
         out << kTestConfig;
@@ -572,7 +627,7 @@ void TestIntegrationRuntimeContextTransfer()
 
 void TestIntegrationShutdownCleanup()
 {
-    const char* temp_config = "test_integration_shutdown.json";
+    const char* temp_config = "test_integration_shutdown.nlohmann";
     {
         std::ofstream out(temp_config);
         out << kTestConfig;

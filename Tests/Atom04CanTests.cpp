@@ -245,7 +245,7 @@ public:
     int fail_countdown{0};   // 由测试线程在 stop() 后设置，不与 TX 线程竞争
 };
 
-// 依据 Config/dart_control.json 的实际取值构造合法配置（恰好 6 个节点）。
+// 依据 Config/dart_control.nlohmann 的实际取值构造合法配置（恰好 6 个节点）。
 void FillValidConfig(FakeConfigView& view)
 {
     view.setInt("can.data_bits", 8);

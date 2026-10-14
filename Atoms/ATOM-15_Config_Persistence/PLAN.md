@@ -174,10 +174,53 @@ const auto result = store.updateRuntime(
 - 同步 `Rule/ConfigSchema.md` 的电机编号说明并升版为 1.4；设计已明确六电机映射，本次不改变设计参数。
 - 仅更新角色枚举、说明和本记录；不修改初始 JSON、C++ 代码、PID 参数、CAN 实现或构建文件；不新增固定数组顺序、固定数量或其他校验约束。
 - 静态验证完成，21 项检查全部通过：现有初始配置通过完整 JSON Schema 校验；六角色有效，旧的 `charge`、非法角色、错误类型被拒绝；数组重排仍有效，原有 PID 和 CAN 超时约束仍生效。
-- 初始配置的 SHA256 保持不变（`049AD5C2994619E8F2BC2DB335A8250163C035AB241BD9EB9BBBC1E3077B02A0`）。本次不运行 ARM 程序或模拟器，也未编译程序。
+- 六电机 Schema 同步阶段记录的初始配置 SHA256 为 `049AD5C2994619E8F2BC2DB335A8250163C035AB241BD9EB9BBBC1E3077B02A0`；后续本节新增配置已按当前需求更新该文件。本次不运行 ARM 程序或模拟器，也未编译程序。
+
+## 9. 舵机通道与蓄力速度配置（2026-10-14）
+
+### 9.1 已确认契约
+
+- 新增顶层 `servo.channels[]`，当前写入两项：`FEED` 使用 PCA9685A 通道 4，`FIRE` 使用 PCA9685A 通道 5。
+- 保留既有编号语义：FEED 舵机 `id=5`；FIRE 舵机编号仍待定，配置中写 `id=null`；FIRE 待机角度和动作角度也保持 `null`。
+- 新增顶层 `charge`：`charge.charge_speed_rpm` 和 `charge.home_speed_rpm`，均为带方向符号的整数，初始/默认值均为 5000 rpm。
+- 两个新增顶层对象和字段均纳入加载校验；缺失、类型错误或舵机 FEED/FIRE 通道不符合契约时加载失败。
+- ATOM-15 只负责配置解析、校验、查询和持久化，不实现蓄力控制、回零动作或舵机动作逻辑。
+
+### 9.2 修改范围
+
+| 文件 | 修改 |
+|---|---|
+| `Config/dart_control.json` | 新增 `charge`，写入两个 5000 rpm；新增 `servo.channels[]`，写入 FEED=4、FIRE=5 |
+| `Design/Config.md` | 新增蓄力速度参数；将 §9.2 的实际通道更新为 FEED=4、FIRE=5；保留 FIRE 编号和角度待定 |
+| `Rule/ConfigSchema.md` | 新增 `charge.*` 键表，更新 `servo.channels[]` 语义和顶层示例，版本升为 1.5 |
+| `Rule/ConfigSchema.schema.json` | 将 `charge`、`servo` 加入必需顶层结构；增加两个 rpm 字段约束和 FEED/FIRE 通道约束 |
+| `Src/config_store.cpp` | 允许并校验 `charge`、`servo` 顶层键及其字段，拒绝错误通道/缺失资源 |
+| `Tests/Atom15ConfigTests.cpp` | 样例增加新配置，并验证两个 rpm 与 FEED/FIRE 通道读取 |
+| `Tests/IntegrationTests.cpp` | 样例增加新配置 |
+| 本文件 | 记录配置语义和实现边界 |
+
+### 9.3 验证边界
+
+- 本次只进行 JSON/Schema 静态检查和 ARM 交叉编译，不运行 ARM 二进制，不运行模拟器。
+- `charge` 的默认值指初始配置和 Schema 默认元数据；配置文件显式写入两个字段，ATOM-15 不对缺失字段静默回填。
+
+## 10. 蓄力/舵机/变力补充配置（2026-10-14）
+
+- P1：`timing.charge_max_action_ms` 从 30 修正为 30000。
+- P2：新增必需 `timing.charge_home_max_action_ms = 25000`。
+- P3：`sbus.functions[]` 新增 `manual_charge_left -> CH8` 与 `manual_charge_right -> CH9`；既有 `manual_charge -> CH2` 保留。
+- P4：左右独立配置键仍未实施。ATOM-08 规划给出两种方案但本轮未收到选择；继续使用共用 `charge_speed_rpm/home_speed_rpm`，左右实时独立性由 CH8/CH9 目标承担。
+- 可选项：新增 `charge.target_range = 15000`，用于对称 `-15000..+15000 rpm` 目标范围校验。
+- 舵机配置补齐 `servo.pca9685.*`、`servo.model.*`、`servo.strategy.*`、`timing.iic_comm_timeout_ms`，以及 `thread.iic_access/iic_priority`。
+- 变力配置新增 `force.center_deadband_rpm = 0` 和 `force.center_action = ZERO_TORQUE`；`ZERO_SPEED` 不作为当前合法值。
+- ATOM-15 校验同步覆盖新增必需对象、字段、枚举、数组范围、CH2/CH8/CH9 映射和 Q-13 中位处置。
+- 为适配 ATOM-07 的 `getIntAt(..., "", ...)` 标量数组读取，ATOM-15 现在支持对 `array<int>` 直接读取元素值；通道范围和角度范围可由消费者正常读取。
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | 0.4 | 2026-10-11 | 获得 Coding 授权后完成首版 ATOM-15 配置快照、IConfigView、生命周期适配器、JSON 读写、PID/预留变量持久化及 ARM 增量构建验证。 |
 | 0.5 | 2026-10-14 | 加入必需 CAN 通信超时配置，初始值 200 ms，范围 1～6000 ms，支持现有授权下的热修改；同步配置规范/Schema/测试样例；仅完成静态验证和 ARM 增量编译。 |
 | 0.6 | 2026-10-14 | 同步六电机 Schema 角色枚举和键名规范，保留初始配置与代码；执行完整 Schema 静态校验。 |
+| 0.7 | 2026-10-14 | 新增 `servo.channels[]` 的 FEED=4/FIRE=5 通道配置与 `charge` 两个 5000 rpm 速度键；同步 Schema、规则、设计配置、ATOM-15 校验和测试样例。 |
+| 0.8 | 2026-10-14 | 落实蓄力 P1/P2/P3、可选目标范围、完整 ATOM-07 舵机/IIC/线程配置，以及变力 Q-13 中位死区与零力矩处置；P4 左右配置键仍待用户选定。 |
+| 0.9 | 2026-10-14 | 将 `force` 和 `thread` 加入必需配置结构；完成 Q-13 校验、标量数组查询修复，并通过初始配置与集成样例 Schema 静态校验及 ARM 增量编译。 |

@@ -50,7 +50,10 @@ const char* kMinimalValidConfig = R"({
     "motor_loop_period_ms": 20,
     "sbus_receive_period_ms": 20,
     "sbus_loss_timeout_ms": 200,
-    "can_comm_timeout_ms": 200
+    "can_comm_timeout_ms": 200,
+    "iic_comm_timeout_ms": 200,
+    "charge_max_action_ms": 30000,
+    "charge_home_max_action_ms": 25000
   },
   "motor": [
     {
@@ -72,6 +75,15 @@ const char* kMinimalValidConfig = R"({
       }
     }
   ],
+  "charge": {
+    "charge_speed_rpm": 5000,
+    "home_speed_rpm": 5000,
+    "target_range": 15000
+  },
+  "force": {
+    "center_deadband_rpm": 0,
+    "center_action": "ZERO_TORQUE"
+  },
   "can": {
     "interface": "CAN0",
     "bitrate": "1Mbps",
@@ -85,12 +97,59 @@ const char* kMinimalValidConfig = R"({
     "frame_bytes": 25,
     "joystick_center": 1024,
     "valid_min": 364,
-    "valid_max": 1684
+    "valid_max": 1684,
+    "functions": [
+      {"name": "manual_charge", "channel": "CH2", "signal_type": "JOYSTICK"},
+      {"name": "manual_charge_left", "channel": "CH8", "signal_type": "JOYSTICK"},
+      {"name": "manual_charge_right", "channel": "CH9", "signal_type": "JOYSTICK"}
+    ]
+  },
+  "servo": {
+    "pca9685": {
+      "i2c_device": "/dev/i2c-7",
+      "address": "0x40",
+      "channel_count": 16,
+      "pwm_resolution_bits": 12,
+      "pwm_frequency_hz": 50,
+      "channel_range": [0, 15],
+      "oe_active_level": "LOW",
+      "access_mode": "SERIALIZED",
+      "task_priority": "MEDIUM_HIGH",
+      "error_handling": "ENTER_FAULT"
+    },
+    "model": {
+      "name": "MG996R",
+      "type": "180_DEGREE",
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "angle_range_deg": [0, 180]
+    },
+    "channels": [
+      {"id": 5, "mechanism": "FEED", "channel": 4, "standby_deg": 20, "action_deg": 30},
+      {"id": null, "mechanism": "FIRE", "channel": 5, "standby_deg": null, "action_deg": null}
+    ],
+    "strategy": {
+      "reload_lift_group": "USE_LIFT_ANGLES",
+      "reload_lower_group": "USE_LOWER_ANGLES",
+      "feed_sequence": "ANGLE1_TO_ANGLE2_TO_ANGLE1",
+      "fire_sequence": "STANDBY_TO_FIRE_TO_STANDBY",
+      "estop_fire_servo": "REJECT_ALL",
+      "estop_other_servos": "HOLD",
+      "comm_fault_servos": "HOLD",
+      "recovery_other_servos": "HOLD",
+      "fire_servo_safe_hold": "HOLD_CURRENT",
+      "out_of_range_action": "REJECT_AND_WARN",
+      "action_failure_action": "FAIL_AND_BLOCK_FIRE"
+    }
+  },
+  "thread": {
+    "iic_access": "SERIALIZED",
+    "iic_priority": "MEDIUM_HIGH"
   },
   "persistence": {
     "file_format": "JSON",
     "directory": "./Config",
-    "file_name": "dart_control.json",
+    "file_name": "dart_control.nlohmann",
     "reserved_variable_count": 100
   }
 })";
@@ -129,7 +188,7 @@ std::string WithCanTimeout(const char* json_value)
 
 class CanTimeoutFile final {
 public:
-    static constexpr const char* path = "test_config_can_timeout.json";
+    static constexpr const char* path = "test_config_can_timeout.nlohmann";
 
     explicit CanTimeoutFile(const std::string& text) { write(text); }
     ~CanTimeoutFile() { std::remove(path); }
@@ -168,7 +227,7 @@ void TestConfigStoreDefaultState()
 void TestConfigStoreLoadValidFile()
 {
     // Create temporary config file
-    const char* temp_file = "test_config_valid.json";
+    const char* temp_file = "test_config_valid.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -184,7 +243,7 @@ void TestConfigStoreLoadValidFile()
 
 void TestConfigStoreLoadInvalidJson()
 {
-    const char* temp_file = "test_config_invalid.json";
+    const char* temp_file = "test_config_invalid.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kInvalidJson;
@@ -201,14 +260,14 @@ void TestConfigStoreLoadInvalidJson()
 void TestConfigStoreLoadMissingFile()
 {
     ConfigStore store;
-    const auto result = store.load("nonexistent_config_file.json");
+    const auto result = store.load("nonexistent_config_file.nlohmann");
 
     Check(!result.success, "reject missing file");
 }
 
 void TestConfigStoreGetString()
 {
-    const char* temp_file = "test_config_get_string.json";
+    const char* temp_file = "test_config_get_string.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -232,7 +291,7 @@ void TestConfigStoreGetString()
 
 void TestConfigStoreGetInt()
 {
-    const char* temp_file = "test_config_get_int.json";
+    const char* temp_file = "test_config_get_int.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -247,11 +306,35 @@ void TestConfigStoreGetInt()
 
     Check(status == ConfigStatus::OK, "getInt status OK");
     Check(value == 4, "getInt correct value");
+
+    Check(store.getInt("charge.charge_speed_rpm", value) == ConfigStatus::OK && value == 5000,
+          "charge speed default is 5000 rpm");
+    Check(store.getInt("charge.home_speed_rpm", value) == ConfigStatus::OK && value == 5000,
+          "charge home speed default is 5000 rpm");
+    Check(store.getInt("force.center_deadband_rpm", value) == ConfigStatus::OK && value == 0,
+          "force center deadband default is 0 rpm");
+    const char* center_action = nullptr;
+    std::uint64_t center_action_size = 0;
+    Check(store.getString("force.center_action", center_action, center_action_size) == ConfigStatus::OK &&
+              std::string_view(center_action, center_action_size) == "ZERO_TORQUE",
+          "force center action is ZERO_TORQUE");
+
+    std::uint64_t channel_count = 0;
+    Check(store.getArraySize("servo.channels", channel_count) == ConfigStatus::OK && channel_count == 2,
+          "servo channel mapping has FEED and FIRE entries");
+    Check(store.getIntAt("servo.channels", 0, "channel", value) == ConfigStatus::OK && value == 4,
+          "FEED uses PCA9685A channel 4");
+    Check(store.getIntAt("servo.channels", 1, "channel", value) == ConfigStatus::OK && value == 5,
+          "FIRE uses PCA9685A channel 5");
+    Check(store.getIntAt("servo.pca9685.channel_range", 0, "", value) == ConfigStatus::OK && value == 0,
+          "scalar integer array lower bound is readable");
+    Check(store.getIntAt("servo.pca9685.channel_range", 1, "", value) == ConfigStatus::OK && value == 15,
+          "scalar integer array upper bound is readable");
 }
 
 void TestConfigStoreGetIntFromString()
 {
-    const char* temp_file = "test_config_get_int_wrong_type.json";
+    const char* temp_file = "test_config_get_int_wrong_type.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -269,7 +352,7 @@ void TestConfigStoreGetIntFromString()
 
 void TestConfigStoreGetStringFromInt()
 {
-    const char* temp_file = "test_config_get_string_wrong_type.json";
+    const char* temp_file = "test_config_get_string_wrong_type.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -288,7 +371,7 @@ void TestConfigStoreGetStringFromInt()
 
 void TestConfigStoreGetMissingKey()
 {
-    const char* temp_file = "test_config_missing_key.json";
+    const char* temp_file = "test_config_missing_key.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -307,7 +390,7 @@ void TestConfigStoreGetMissingKey()
 
 void TestConfigStoreMotorArray()
 {
-    const char* temp_file = "test_config_motor_array.json";
+    const char* temp_file = "test_config_motor_array.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -327,7 +410,7 @@ void TestConfigStoreMotorArray()
 
 void TestConfigStoreNestedKeys()
 {
-    const char* temp_file = "test_config_nested.json";
+    const char* temp_file = "test_config_nested.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -480,7 +563,7 @@ void TestCanCommTimeoutPersistenceFailure()
 
 void TestConfigStoreIConfigViewInterface()
 {
-    const char* temp_file = "test_config_interface.json";
+    const char* temp_file = "test_config_interface.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -503,7 +586,7 @@ void TestConfigStoreIConfigViewInterface()
 
 void TestConfigStoreThreadSafety()
 {
-    const char* temp_file = "test_config_thread_safety.json";
+    const char* temp_file = "test_config_thread_safety.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;
@@ -543,7 +626,7 @@ void TestConfigStoreThreadSafety()
 
 void TestConfigStoreSchemaVersion()
 {
-    const char* temp_file = "test_config_schema.json";
+    const char* temp_file = "test_config_schema.nlohmann";
     {
         std::ofstream out(temp_file);
         out << kMinimalValidConfig;

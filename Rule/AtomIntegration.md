@@ -10,13 +10,13 @@
 | 权威设计 | `Design/Interface.md`（模块边界与接口契约）、`Design/Config.md`（唯一配置来源）、`Design/Atoms.md`（19 个功能类索引） |
 | 键名规范 | `Rule/ConfigSchema.md`（`dart_control.json` 的键名、类型、单位与结构的唯一来源） |
 | 已实现基线 | `Atoms/ATOM-01_Runtime`（硬件生命周期）、`Atoms/ATOM-02_State_Arbitration`（业务状态机与控制权仲裁）、`Atoms/Public/`（共享契约 + `AppCoordinator` 桥接层） |
-| 版本 | 1.2 |
+| 版本 | 1.4 |
 | 编制日期 | 2026-09-27 |
-| 更新日期 | 2026-10-10 |
+| 更新日期 | 2026-10-14 |
 | 设计同步基线 | PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8 |
 | 性质 | **规范性规则文件**，不是设计文档的复述。凡与 `Design/` 冲突，以 `Design/` 为准并应同步修订本文件 |
 
-本文件统一模块接入方向和调用边界，不能替代尚未落地的公共 API。当前只有生命周期及仲裁数据类型已落入 Public；输入上报、仲裁、安全请求和公共时钟端口仍需确认后实施。根目录 `PLAN.md` 记录启动阻断与同步方案，不能把本文件中的接入要求视为代码已实现，也不扩大根规则允许的网关/装配职责。
+本文件统一模块接入方向和调用边界，不能替代尚未落地的公共 API。已落入 `Atoms/Public`（`Marshland::PublicHeaders`）并经本文件核对的契约：生命周期与启动步骤（`ILifecycle.hpp`）、业务模式与仲裁结果类型（`MarshlandTypes.hpp`、`StateArbitrationTypes.hpp`）、配置查询（`IConfigView.hpp`）、输入上报/仲裁/安全控制/状态读取窄端口（`AppInterfaces.hpp`）、单调时钟抽象（`IMonotonicClock.hpp`）以及 SBUS/CAN 类型与端口。接口已存在不等于行为已接通：其实现仍属装配层与对应 ATOM，模块不得以"端口已存在"为由跳过仲裁、配置检查或安全复核。根目录 `PLAN.md` 记录启动阻断与同步方案，不能把本文件中的接入要求视为代码已实现，也不扩大根规则允许的网关/装配职责。
 
 ### 0.1 规范性用语
 
@@ -224,6 +224,10 @@ ATOM-08/09 当前计划采用外部 update/tick，不自行创建线程；不能
 
 ATOM-14 等确需独立资源初始化/释放的模块，必须先确认如何映射到既有步骤；只有既有语义无法承载时，才由 ATOM-01 负责人提出公共步骤扩展。当前没有批准新增 `InitializeChargeAndForce` 或 `InitializeSafetyServices`，也不把此事项误记为 ATOM-01 已登记的未修复代码缺陷。
 
+**(c) ATOM 内注册接口与外部注册的分工**
+
+模块**应**在本目录内提供 `ILifecycleModule` 适配器（`Inc/atomNN_<名称>/lifecycle_adapter.hpp` + `Src/lifecycle_adapter.cpp`）作为可被顶层直接注册的 **ATOM 内注册接口**；`addModule()` 注册、步骤归属、对象寿命与 `required` 取值由顶层装配/设计方负责，模块**禁止**自注册或注册其他模块。提供该适配器不等于模块必须拥有独立线程或设备：适配器只做初始化编排与结果翻译。
+
 ---
 
 ## 4. 模块对外的三个契约面
@@ -249,7 +253,7 @@ ATOM-14 等确需独立资源初始化/释放的模块，必须先确认如何�
 **理由**：`AppCoordinator` 是外部输入的**唯一写入点**。存在两条独立写入路径时，一次整体替换式
 提交会清零其他来源写入的字段（历史缺陷 `ATOM02-BUG-005`）。窄端口不新增第二份输入状态，也不直接写字段；输入仍由 AppCoordinator 唯一转发。单一写入点不等于线程安全，同步方案见根目录 `PLAN.md` §5，当前尚未实施。
 
-**实施状态**：公共输入端口尚未落地。下表列出装配层最终委托的现有方法，不是 ATOM 可以直接包含具体类调用的接口；实际端口签名确认前不得自行假设可用。
+**实施状态**：公共输入窄端口已落地为 `Atoms/Public/AppInterfaces.hpp` 中的 `IInputReporter`（下表各 `ReportXxx`）、`IControlAuthority`、`ISafetyStateControl` 与 `IStateReader`（`StateReadView`）。模块**必须**注入并按这些 Public 接口上报；**禁止**包含 `AppCoordinator.hpp`、ATOM-02 私有头，也**禁止**注入具体 `AppCoordinator&` / `StateArbitrator&`。下表说明各上报内容与最终委托方法的对应关系。
 
 | 上报内容 | 应调用的接口 |
 |---|---|
@@ -275,7 +279,7 @@ ATOM-14 等确需独立资源初始化/释放的模块，必须先确认如何�
 ### 4.3 仲裁面 —— 提交意图前先仲裁
 
 需要状态机裁决的动作（自动启动/停止、发射、停止发射标志清除、安全动作），
-**必须**通过注入的窄仲裁端口/回调提交 `ControlIntent`，由装配层最终委托 `SubmitIntent(const ControlIntent&)`，并检查 `IntentDecision::accepted`。确认/解除和模式/流程提交同样不通过包含 ATOM-02 私有头获得调用能力；其窄端口仍待落地。
+**必须**通过注入的窄仲裁端口/回调提交 `ControlIntent`，由装配层最终委托 `SubmitIntent(const ControlIntent&)`，并检查 `IntentDecision::accepted`。确认/解除和模式/流程提交同样不通过包含 ATOM-02 私有头获得调用能力；这些窄端口已落地于 `AppInterfaces.hpp` 的 `IControlAuthority`（`SubmitIntent` / `SubmitStopFireIntent` / `RequestModeTransition` / `RequestAutoFireState` / `BeginNewAutoFireRun` / `TerminateAutoFireOnSbusTakeover` / `AuthorizeFire` / `AuthorizeManualFire`）与 `ISafetyStateControl`（`ConfirmSoftwareEstop` / `ReleaseSoftwareEstopLatch`），具体实现由装配层委托 ATOM-02。
 
 **禁止**把 `accepted == false` 当作成功。
 
@@ -458,8 +462,8 @@ runtime.addModule(runtime::ModuleRegistration{
 
 ## 8. 时间、周期与线程
 
-1. **必须**使用单调时钟。现有 `IMonotonicClock` 定义在 AppCoordinator 具体头内，不能作为 ATOM 的直接依赖；其实现 `SystemMonotonicClock` 当前也包含该头。
-2. ATOM 通过确认后的独立公共时钟端口、窄回调或显式单调时间参数获得时间，由装配层绑定现有时钟；公共时钟头尚未提取，禁止假设已经可用。需要统一替换和测试的时间源应由装配层注入。
+1. **必须**使用单调时钟。抽象 `IMonotonicClock` 已上提至 `Atoms/Public/IMonotonicClock.hpp`（`Marshland::PublicHeaders`），是任何 ATOM 都可直接依赖的纯契约头；其实 `SystemMonotonicClock` 仍位于 `Atoms/Public/AppCoordinator/Inc/`，属装配层资产，ATOM **禁止**包含。
+2. ATOM 通过 `IMonotonicClock`、窄回调或显式单调时间参数获得时间，由装配层绑定具体实现。需要统一替换和测试的时间源应由装配层注入；未注入时钟时模块不得自行取墙上时钟或系统时间。
 3. 周期**必须**遵守 `Design/Config.md` §4 的规定（系统最长控制周期 100 ms；
    电机闭环/PID/CAN/GPIO/SBUS/WebSocket 均为 20 ms）。
 4. 线程调度为 Linux `SCHED_OTHER`，固定周期任务用单调时钟**绝对期限**并监测超期。
@@ -531,7 +535,7 @@ cmake --build cmake-build-ubuntu-arm --target marshland -j
 | 4 | 结构化生命周期事件的落地（`ILifecycleEventSink`） | ATOM-18 与 ATOM-01 的事件流 | 契约已定义于 `Design/LifecycleEvents.md`，代码未实施 |
 | 5 | 不支持运行中重启 | 全部模块对重启的假设 | 已裁决；Runtime 已收紧，不能继续标记待修复 |
 | 6 | WEB/SBUS 人工确认请求交给 ATOM-14，恢复成功后再解除锁存 | ATOM-03/14/16 | 归属已明确，窄安全端口和调用链尚未实施 |
-| 7 | 输入、仲裁、安全请求和公共时钟调用端口 | 全部接入模块 | 尚未落地；禁止以具体头包含替代契约 |
+| 7 | 输入、仲裁、安全请求和公共时钟调用端口 | 全部接入模块 | **契约已落地**：`AppInterfaces.hpp`（`IInputReporter` / `IControlAuthority` / `ISafetyStateControl` / `IStateReader`）+ `IConfigView.hpp` + `IMonotonicClock.hpp`；实现仍在装配层，禁止以具体头包含替代契约 |
 | 8 | 统一同步入口与引用生命期 | 所有状态读写方 | 根 `PLAN.md` §5 为推荐方案，待确认实施 |
 
 ---
@@ -552,3 +556,4 @@ cmake --build cmake-build-ubuntu-arm --target marshland -j
 | 1.1 | 2026-09-27 | 同步 ATOM-02 修复轮后的实际接口：`IntentKind` 拆分为 `SAFETY`（不出力，锁定阶段即可）/ `SAFETY_RECOVERY`（出力，仅人工确认后），§4.3.1 与 §10 自检项随之改写；§4.3.2 补充 `EvaluateFireAuthorization` 的显式 `control_holder` 入参与 `NO_CONTROL_AUTHORITY`；§11 新增急停确认归属与本规范可见性两项待裁决；新增 §12 说明可见性问题。 |
 | 1.2 | 2026-10-10 | 对齐双 M3508 与分阶段安全输出；修正具体类注入、时钟依赖及线程生命周期的矛盾；区分公共类型、待落地调用端口和真实代码状态；同步 WEB 清标志限制与根 PLAN 方案；移除未复核子目录规则推断。仅修正文档，未实施代码。 |
 | 1.3 | 2026-10-10 | 配置读取改为经 `IConfigView`（新增 `Atoms/Public/IConfigView.hpp` 纯契约头，非可执行代码）：§0 增键名规范引用，§2.2 适配器示例改为注入 `IConfigView` 并检查 `ConfigStatus`，§2.3 表项 4 改写，§5 全节重写（`RuntimeContext` 与 `IConfigView` 的分工、热加载、`ConfigStatus` 必须检查、键名唯一来源 `Rule/ConfigSchema.md`），§10 自检增设配置项，§11 第 3 项标记已解决。**本轮未修改任何可执行代码**（仅新增一个接口声明头、登记其到 Public 的 CMake 接口目标、并更新文档）。 |
+| 1.4 | 2026-10-14 | 现实同步：`AppInterfaces.hpp`（`IInputReporter`/`IControlAuthority`/`ISafetyStateControl`/`IStateReader`）与 `IMonotonicClock.hpp` 已由 `Marshland::PublicHeaders` 导出，据实改写 §0、§4.2、§4.3、§8、§11 第 7 项中"端口尚未落地/时钟头尚未提取"的表述；§3.1 新增 (c) 说明 ATOM 内注册接口与顶层外部注册的分工；表头版本由 1.2 校正为 1.4。仅修正文档，未修改任何代码。 |

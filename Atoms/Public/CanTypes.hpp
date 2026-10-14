@@ -10,7 +10,7 @@
 //   Design/Config.md       §5.1（电机映射）、§6.1（SocketCAN）、§6.2（报文接口表）、
 //                          §6.3（零力矩）、§14.2（F-CAN-001 / F-CAN-002）
 //   Design/Atomic/ATOM-04_CAN.md  电机 CAN 帧语义 / 零力矩安全帧 / 验收条件
-//   Config/dart_control.json      motor[].id / motor[].node、can.zero_torque
+//   Config/dart_control.nlohmann      motor[].id / motor[].node、can.zero_torque
 //
 // 依赖方向（不可协商）：
 //   仅依赖 C++ 标准库。禁止包含 AppCoordinator.hpp、任何 ATOM 私有头。

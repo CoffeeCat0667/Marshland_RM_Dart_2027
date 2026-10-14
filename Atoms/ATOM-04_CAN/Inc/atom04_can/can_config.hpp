@@ -9,7 +9,7 @@
 //   * 逐项检查 ConfigStatus，非 OK 一律失败并区分原因；
 //   * 禁止臆造默认值；禁止把缺失键当作可选而静默填值。
 //
-// 接口名偏差（已授权）：Config/dart_control.json 与 Design/Config.md §6.1 写
+// 接口名偏差（已授权）：Config/dart_control.nlohmann 与 Design/Config.md §6.1 写
 // "CAN0"，但 Linux SocketCAN 接口名区分大小写，本模块固定使用 "can0"。
 // 该偏差登记于 Rule/ATOM4ConnectProject.md 与 PLAN.md。
 // ============================================================================
@@ -26,7 +26,7 @@
 namespace marshland::atom04 {
 
 // 实际使用的 Linux 接口名。
-// 偏差登记：Design/Config.md §6.1 与 Config/dart_control.json 写 "CAN0"，
+// 偏差登记：Design/Config.md §6.1 与 Config/dart_control.nlohmann 写 "CAN0"，
 // 但 Linux SocketCAN 接口名区分大小写；用户裁决使用 "can0"。
 // 详见 Rule/ATOM4ConnectProject.md §10 与 PLAN.md §12。
 inline constexpr const char* kSocketCanInterfaceName = "can0";

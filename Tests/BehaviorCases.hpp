@@ -49,7 +49,7 @@ void TestSystemClock()
 
 void TestRuntimeContextAndOrder()
 {
-    RuntimeContext context{"./test-only.json", {{"test-key", "test-value"}}};
+    RuntimeContext context{"./test-only.nlohmann", {{"test-key", "test-value"}}};
     int initializes = 0, stops = 0;
     std::vector<int> order;
     RuntimeCoordinator runtime{context};

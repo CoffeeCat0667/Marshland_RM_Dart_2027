@@ -11,9 +11,13 @@
     "mode",
     "timing",
     "motor",
+    "charge",
+    "force",
     "can",
     "sbus",
-    "persistence"
+    "persistence",
+    "servo",
+    "thread"
   ],
   "properties": {
     "schema_version": {
@@ -106,7 +110,7 @@
       "type": "object",
       "additionalProperties": false,
       "description": "运行时序与动作参数（Design/Config.md §4）。所有周期/超时键名必须带 _ms 或 _s 后缀。",
-      "required": ["can_comm_timeout_ms"],
+      "required": ["can_comm_timeout_ms", "iic_comm_timeout_ms", "charge_max_action_ms", "charge_home_max_action_ms"],
       "properties": {
         "max_control_cycle_ms": { "type": "integer", "minimum": 1, "description": "系统最长控制周期，硬性上限 100" },
         "motor_loop_period_ms": { "type": "integer", "minimum": 1 },
@@ -132,7 +136,8 @@
         "fire_angle_hold_ms": { "type": "integer", "minimum": 0 },
         "sbus_loss_timeout_ms": { "type": "integer", "minimum": 1 },
         "charge_time_s": { "type": "integer", "minimum": 0, "description": "蓄力时间 X" },
-        "charge_max_action_ms": { "type": "integer", "minimum": 0 },
+        "charge_max_action_ms": { "type": "integer", "minimum": 1, "description": "蓄力最大动作时间，30000 ms。" },
+        "charge_home_max_action_ms": { "type": "integer", "minimum": 1, "description": "蓄力回零最大动作时间，25000 ms。" },
         "force_time_s": { "type": "integer", "minimum": 0, "description": "变力时间 X" },
         "feed_max_action_ms": { "type": "integer", "minimum": 0 },
         "force_max_action_ms": { "type": "integer", "minimum": 0 },
@@ -231,13 +236,49 @@
       }
     },
 
+    "charge": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "蓄力机构速度参数（Design/Config.md §5.5）。速度为带方向符号的 rpm。",
+      "required": ["charge_speed_rpm", "home_speed_rpm"],
+      "properties": {
+        "charge_speed_rpm": {
+          "type": "integer",
+          "default": 5000,
+          "description": "正常蓄力恒定速度，含方向符号，单位 rpm。"
+        },
+        "home_speed_rpm": {
+          "type": "integer",
+          "default": 5000,
+          "description": "回零速度，含方向符号，单位 rpm。"
+        },
+        "target_range": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 15000,
+          "description": "蓄力目标的对称 rpm 范围，15000 表示 -15000..+15000。"
+        }
+      }
+    },
+
     "force": {
       "type": "object",
       "additionalProperties": false,
-      "description": "变力机构（Design/Config.md §5.5）",
+      "description": "变力机构（Design/Config.md §5.6）",
+      "required": ["center_deadband_rpm", "center_action"],
       "properties": {
+        "center_deadband_rpm": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "CH12 中位判定死区，单位 rpm。"
+        },
+        "center_action": {
+          "enum": ["ZERO_TORQUE"],
+          "description": "Q-13 固定中位处置。ZERO_SPEED 仅为未来扩展保留，当前版本不接受。"
+        },
         "control_mode": { "enum": ["CLOSED_LOOP_PID"] },
-        "target_default_source": { "type": ["string", "null"] },
+        "target_default_source": { "enum": ["SBUS_CH12", null], "description": "变力机构手动目标来源；CH12 为变力专用映射，不使用通用缩放 x。" },
         "target_unit": { "enum": ["rpm"] },
         "target_range": { "type": "integer", "minimum": 0, "description": "对称范围，正数表示 ±该值" },
         "completion_criterion": { "enum": ["TIMED"] },
@@ -249,7 +290,7 @@
     "servo_mechanisms": {
       "type": "object",
       "additionalProperties": false,
-      "description": "换弹/供弹/发射机构舵机参数（Design/Config.md §5.6、§9.2）",
+      "description": "换弹/供弹/发射机构舵机参数（Design/Config.md §5.7、§9.2）",
       "properties": {
         "reload": {
           "type": "array",
@@ -395,6 +436,36 @@
         "functions": {
           "type": "array",
           "description": "功能映射（Design/Config.md §7.1）。标记 [待定] 的 channel 必须为 null。",
+          "contains": {
+            "type": "object",
+            "required": ["name", "channel"],
+            "properties": {
+              "name": { "const": "manual_charge" },
+              "channel": { "const": "CH2" }
+            }
+          },
+          "allOf": [
+            {
+              "contains": {
+                "type": "object",
+                "required": ["name", "channel"],
+                "properties": {
+                  "name": { "const": "manual_charge_left" },
+                  "channel": { "const": "CH8" }
+                }
+              }
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": ["name", "channel"],
+                "properties": {
+                  "name": { "const": "manual_charge_right" },
+                  "channel": { "const": "CH9" }
+                }
+              }
+            }
+          ],
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -403,7 +474,7 @@
               "name": {
                 "enum": [
                   "manual_mode_toggle", "auto_mode", "estop_trigger", "estop_confirm",
-                  "stop_fire", "auto_start", "manual_charge", "manual_reload",
+                  "stop_fire", "auto_start", "manual_charge", "manual_charge_left", "manual_charge_right", "manual_reload",
                   "manual_feed", "manual_force", "manual_yaw", "manual_fire"
                 ]
               },
@@ -460,10 +531,12 @@
       "type": "object",
       "additionalProperties": false,
       "description": "PCA9685A、IIC 与舵机资源（Design/Config.md §9）",
+      "required": ["pca9685", "model", "channels", "strategy"],
       "properties": {
         "pca9685": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["i2c_device", "address", "channel_count", "pwm_resolution_bits", "pwm_frequency_hz", "channel_range", "oe_active_level", "access_mode", "task_priority", "error_handling"],
           "properties": {
             "i2c_device": { "type": "string", "pattern": "^/dev/i2c-[0-9]+$" },
             "address": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{2}$" },
@@ -480,6 +553,7 @@
         "model": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["name", "type", "pulse_min_us", "pulse_max_us", "angle_range_deg"],
           "properties": {
             "name": { "type": "string" },
             "type": { "enum": ["180_DEGREE"] },
@@ -490,14 +564,36 @@
         },
         "channels": {
           "type": "array",
-          "description": "舵机资源（Design/Config.md §9.2）。[待定] 项写 null。",
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "舵机资源（Design/Config.md §9.2）。当前固定登记 FEED=4、FIRE=5 为 PCA9685A 通道；发射舵机编号仍可为 null。",
+          "contains": {
+            "type": "object",
+            "required": ["mechanism", "channel"],
+            "properties": {
+              "mechanism": { "const": "FEED" },
+              "channel": { "const": 4 }
+            }
+          },
+          "allOf": [
+            {
+              "contains": {
+                "type": "object",
+                "required": ["mechanism", "channel"],
+                "properties": {
+                  "mechanism": { "const": "FIRE" },
+                  "channel": { "const": 5 }
+                }
+              }
+            }
+          ],
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["id", "mechanism"],
             "properties": {
-              "id": { "type": "integer", "minimum": 1 },
-              "mechanism": { "enum": ["RELOAD", "FEED", "FIRE"] },
+              "id": { "type": ["integer", "null"], "minimum": 1 },
+              "mechanism": { "enum": ["FEED", "FIRE"] },
               "channel": { "type": ["integer", "null"], "minimum": 0, "maximum": 15 },
               "standby_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 },
               "action_deg": { "type": ["integer", "null"], "minimum": 0, "maximum": 180 }
@@ -508,6 +604,7 @@
           "type": "object",
           "additionalProperties": false,
           "description": "舵机动作策略（Design/Config.md §9.3）",
+          "required": ["reload_lift_group", "reload_lower_group", "feed_sequence", "fire_sequence", "estop_fire_servo", "estop_other_servos", "comm_fault_servos", "recovery_other_servos", "fire_servo_safe_hold", "out_of_range_action", "action_failure_action"],
           "properties": {
             "reload_lift_group": { "enum": ["USE_LIFT_ANGLES"] },
             "reload_lower_group": { "enum": ["USE_LOWER_ANGLES"] },
@@ -753,6 +850,7 @@
       "type": "object",
       "additionalProperties": false,
       "description": "线程、并发与调度（Design/Config.md §15）",
+      "required": ["iic_access", "iic_priority"],
       "properties": {
         "motor_loop_task": { "enum": ["DEDICATED_THREAD"] },
         "can_rx_task": { "enum": ["DEDICATED_TASK"] },

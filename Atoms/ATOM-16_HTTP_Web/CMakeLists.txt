@@ -54,3 +54,32 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
+
+# 第三方依赖（cpp-httplib + nlohmann/json，header-only，位于上层共享 ThirdParty/）。
+# 上层 CMakeLists 对本模块只读，故此处兜底 add_subdirectory；若上层已统一引入则跳过。
+# 第三方头只在 Src/ 内包含：STATIC 时 PRIVATE 链接，不随对外接口泄漏。
+if(NOT TARGET marshland_thirdparty_httplib)
+    add_subdirectory("${ATOM_MODULE_DIR}/../../ThirdParty"
+        "${CMAKE_BINARY_DIR}/ThirdParty")
+endif()
+if(ATOM_MODULE_SCOPE STREQUAL "INTERFACE")
+    target_link_libraries(${ATOM_MODULE_TARGET} INTERFACE
+        Marshland::ThirdPartyHttplib Marshland::ThirdPartyNlohmannJson)
+else()
+    target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE
+        Marshland::ThirdPartyHttplib Marshland::ThirdPartyNlohmannJson)
+endif()
+
+# Public 契约头（MarshlandTypes/ILifecycle/IConfigView/AppInterfaces/...）。
+if(TARGET Marshland::PublicHeaders)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::PublicHeaders)
+endif()
+
+# httplib 在 Linux 下需要 pthread；上层工程未统一引入时此处兜底。
+if(NOT TARGET Threads::Threads)
+    find_package(Threads QUIET)
+endif()
+if(TARGET Threads::Threads AND ATOM_MODULE_SCOPE STREQUAL "PUBLIC")
+    target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE Threads::Threads)
+endif()

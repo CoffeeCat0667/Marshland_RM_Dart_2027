@@ -1,7 +1,7 @@
 # ATOM-03_SBUS 工程接入说明
 
-> 版本：1.2
-> 日期：2026-10-11  
+> 版本：1.3
+> 日期：2026-10-14  
 > 适用模块：`Atoms/ATOM-03_SBUS`
 
 ## 1. 接入目标
@@ -147,7 +147,7 @@ UART 后端必须保证 `cancel()` 能打断阻塞读取。
 - CH9：蓄力机构右电机速度；
 - CH10：换弹机构左电机速度；
 - CH11：换弹机构右电机速度；
-- CH12：变力机构速度，线性映射为 `-2000～+2000 rpm`；`364=-2000 rpm`、`1024=0 rpm`、`1684=+2000 rpm`；
+- CH12：变力机构速度（**变力机构手动目标来源**，对应 `force.target_default_source = SBUS_CH12`），线性映射为 `-2000～+2000 rpm`；`364=-2000 rpm`、`1024=0 rpm`、`1684=+2000 rpm`；
 - CH13～CH16：保留，不映射。
 
 连续通道使用：
@@ -200,5 +200,6 @@ ATOM-03 只在快照中保存 CH5～CH7 的结果：
 |---|---|---|
 | 1.1 | 2026-10-11 | 串口设备改为由 `RuntimeContext::values["sbus.serial_device"]` 传入，`100000 8E2` 固定在 Linux UART 实现内；补充 `LinuxSbusByteStream` 装配说明。 |
 | 1.2 | 2026-10-11 | 明确 `SbusChannelSnapshot::frame_sequence` **保留**（每有效帧递增，供诊断与快照新鲜度判断），并澄清它不构成帧序号连续性检查；§8 的"不增加…帧序号连续性检查或统计接口"措辞随之修正。同步 `Design/Config.md` §7.1 通道表以本文件为准（CH12 为已映射的变力通道、CH13～CH16 保留、CH2/CH3 不区分左右电机）。 |
+| 1.3 | 2026-10-14 | **统一 SBUS 变力通道标准**：§8 明确 CH12 即变力机构手动目标来源，对应 `force.target_default_source = SBUS_CH12`；通道规则本身不变（CH13～CH16 保留、专用映射不使用通用 `x`）。同步 `Design/Config.md` 1.3、`Design/Interface.md` 1.7、`Rule/ConfigSchema.md` 1.6。 |
 
 本阶段按用户要求不执行编译。

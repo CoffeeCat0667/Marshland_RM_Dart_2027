@@ -54,3 +54,10 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
+
+# 共享契约依赖：Atoms/Public/Headers 的 Marshland::PublicHeaders
+# 与 ATOM-03 等模块保持一致，使 "ATOM -> Public" 依赖进入 CMake 依赖图。
+if(TARGET Marshland::PublicHeaders)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::PublicHeaders)
+endif()

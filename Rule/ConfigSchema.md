@@ -10,7 +10,7 @@
 | 机器可读形式 | `Rule/ConfigSchema.schema.json`（JSON Schema 2020-12）—— **形式化契约，供 `ATOM-15` 直接校验**。本文件是它的中文可读说明；两者不一致时以 schema 文件为准并修订本文件 |
 | 消费者 | `ATOM-15`（解析、校验、提供查询）与 `ATOM-03`～`ATOM-19`（经 `IConfigView` 取值） |
 | 关联文档 | `Rule/AtomIntegration.md`（接入规范）、`Atoms/ATOM-15_Config_Persistence/PLAN.md`（实现方案） |
-| 版本 | 1.4 |
+| 版本 | 1.8 |
 | 编制日期 | 2026-09-27 |
 | 更新日期 | 2026-10-14 |
 | 状态 | **正式**。修改本文件必须同步 `Design/Config.md` 与 `ConfigSchema.schema.json`；冲突时以 `Design/Config.md` 的数值为准并修订本文件 |
@@ -38,10 +38,11 @@
 | `mode` | 功能模式启用开关与初始状态 | §3 |
 | `timing` | 运行时序、周期、超时 | §4 |
 | `motor` | 电机映射、控制、PID、编码器 | §5.1–5.4 |
-| `force` | 变力机构 | §5.5 |
-| `reload` | 换弹机构 | §5.6 |
-| `feed` | 供弹机构 | §5.6 |
-| `fire` | 发射机构 | §5.6 |
+| `charge` | 蓄力机构速度参数 | §5.5 |
+| `force` | 变力机构 | §5.6 |
+| `reload` | 换弹机构 | §5.7 |
+| `feed` | 供弹机构 | §5.7 |
+| `fire` | 发射机构 | §5.7 |
 | `can` | SocketCAN 与 CAN 报文 | §6 |
 | `sbus` | SBUS 输入与通道映射 | §7 |
 | `gpio` | GPIO、限位开关、压力传感器预留 | §8 |
@@ -208,7 +209,8 @@
 | `timing.fire_angle_hold_ms` | int | ms | 发射角度保持时间（100） |
 | `timing.sbus_loss_timeout_ms` | int | ms | SBUS 失联判定时间（200） |
 | `timing.charge_time_s` | int | s | 蓄力时间 X（30） |
-| `timing.charge_max_action_ms` | int | ms | 蓄力最大动作时间 |
+| `timing.charge_max_action_ms` | int | ms | 蓄力最大动作时间（30000） |
+| `timing.charge_home_max_action_ms` | int | ms | 蓄力回零最大动作时间（25000） |
 | `timing.force_time_s` | int | s | 变力时间 X（30） |
 | `timing.feed_max_action_ms` | int | ms | 供弹机构最大动作时间 |
 | `timing.force_max_action_ms` | int | ms | 变力机构最大动作时间 |
@@ -289,33 +291,43 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 > `Atoms/` 全域检索不到任何 2500 rpm 的编码器阈值，2500 仅出现在舵机脉宽（500~2500 µs）。
 > 不存在待裁决的冲突。
 
-### 2.5 `force.*` —— 变力机构（`Config.md` §5.5）
+### 2.5 `charge.*` —— 蓄力机构速度（`Config.md` §5.5）
+
+| ID | 类型 | 单位 | 说明 |
+|---|---|---|---|
+| `charge.charge_speed_rpm` | int | rpm | 正常蓄力恒定速度，含方向符号；默认值 5000 |
+| `charge.home_speed_rpm` | int | rpm | 回零速度，含方向符号；默认值 5000 |
+| `charge.target_range` | int | rpm | 蓄力目标对称范围（15000 表示 ±15000），可选 |
+
+两个键均为带符号整数。默认值是初始配置值；配置文件中应显式写入，ATOM-15 不因缺失而静默创建隐含运行参数。
+
+### 2.6 `force.*` —— 变力机构（`Config.md` §5.6）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
 | `force.control_mode` | str | — | 控制方式，`CLOSED_LOOP_PID` |
-| `force.target_default_source` | str | — | 目标值来源，`SBUS_CH3`（WEB 经 `force_set`） |
+| `force.target_default_source` | str | — | 目标值来源，`SBUS_CH12`（CH12 为变力专用映射：`(raw - 1024) * 2000 / 660`，`-2000`～`+2000` rpm，**不使用**通用 `x`；WEB 经 `force_set`） |
 | `force.target_unit` | str | — | 目标单位，`rpm` |
 | `force.target_range` | int | rpm | 允许范围（对称 ±15000） |
 | `force.completion_criterion` | str | — | 完成判据，`TIMED`（执行 `timing.force_time_s`） |
 | `force.calibration_method` | str | — | 校准方式，`MANUAL` |
 | `force.has_dedicated_fault_handling` | bool | — | 是否有本机构专属异常处理，`false` |
+| `force.center_deadband_rpm` | int | rpm | CH12 中位判定死区（≥0），默认 0 |
+| `force.center_action` | enum str | — | 当前固定 `ZERO_TORQUE`；`ZERO_SPEED` 仅作未来扩展保留 |
 
-### 2.6 `reload.*` / `feed.*` / `fire.*` —— 舵机机构（`Config.md` §5.6）
+### 2.7 换弹机构（双 M3508）与 `feed.*` / `fire.*` 舵机（`Config.md` §5.7）
 
-`Config.md` §5.6 是舵机机构参数表，与 §9.2 的舵机资源表配套。**以 §5.6 为准**。
+`Config.md` §5.7 是换弹/供弹/发射机构参数表，与 §9.2 的舵机资源表配套。**以 §5.7 为准**。
 
-#### 2.6.1 换弹机构（`reload[]`，四个舵机）
+#### 2.7.1 换弹机构（左右两台 M3508，**非舵机**）
 
-| 元素键 | 类型 | 单位 | 说明 |
-|---|---|---|---|
-| `servo_id` | int | — | 舵机编号 1–4 |
-| `standby_deg` | int | deg | 待机/基准角度 |
-| `lift_deg` | int | deg | 抬起角度 |
-| `lower_deg` | int | deg | 放下角度 |
-| `settle_ms` | int | ms | 动作完成判据延时（引用 `timing.reload_*_settle_ms` 的值） |
+> **更正（2026-10-14，Q-24）**：`Config.md` §5.7 已明确换弹机构为**左右两台 M3508**（右侧 id:3 / node `0x203`、左侧 id:4 / node `0x204`，见 §5.1），控制模式 `VELOCITY`；抬起左 +2000 / 右 −2000 rpm，放下左 −2000 / 右 +2000 rpm；按 `timing.reload_lift_run_s` / `timing.reload_lower_run_s`（各 3 s）运行后提交两台 0 rpm 并保持速度闭环（零转速目标 ≠ 零力矩）。
+>
+> **本文件 v1.6 及以前的「`reload[]` 四个舵机」键结构作废**：换弹不接入舵机；换弹不设置动作超时（3 s 为正常运行计时，不是故障超时）；原引用的 `timing.reload_*_settle_ms` 不存在。
+>
+> `Rule/ConfigSchema.schema.json` 的 `servo_mechanisms.reload[]` 与初始 JSON 仍为旧结构，其键结构迁移属 ATOM-10 / ATOM-15 接入范围，**待用户确认后另行实施**，不属本次文档更正。
 
-#### 2.6.2 供弹机构（`feed.*`，单舵机）
+#### 2.7.2 供弹机构（`feed.*`，单舵机）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -324,7 +336,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `feed.angle2_deg` | int | deg | 角度二（换弹位） |
 | `feed.hold_ms` | int | ms | 角度二保持时间 |
 
-#### 2.6.3 发射机构（`fire.*`）
+#### 2.7.3 发射机构（`fire.*`）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -333,7 +345,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `fire.fire_deg` | int | deg | 发射角度（`[待定]` → 省略） |
 | `fire.hold_ms` | int | ms | 发射角度保持时间 |
 
-### 2.7 `can.*` —— SocketCAN 与报文（`Config.md` §6）
+### 2.8 `can.*` —— SocketCAN 与报文（`Config.md` §6）
 
 #### 2.7.1 基础配置（`can.*`，`Config.md` §6.1）
 
@@ -392,7 +404,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `can.zero_torque.fire_servo_on_comm_fault` | str | — | 通信异常时发射舵机，`REJECT_CHANGE` |
 | `can.silence_trigger` | str | — | 全机静默触发条件，`ZERO_TORQUE_SEND_FAILED` |
 
-### 2.8 `sbus.*` —— SBUS（`Config.md` §7）
+### 2.9 `sbus.*` —— SBUS（`Config.md` §7）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -418,7 +430,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 
 | 元素键 | 类型 | 说明 |
 |---|---|---|
-| `name` | str | 功能名，如 `manual_mode_toggle`、`auto_mode`、`estop_trigger`、`estop_confirm`、`stop_fire`、`auto_start`、`manual_charge`、`manual_reload`、`manual_feed`、`manual_force`、`manual_yaw`、`manual_fire` |
+| `name` | str | 功能名，如 `manual_mode_toggle`、`auto_mode`、`estop_trigger`、`estop_confirm`、`stop_fire`、`auto_start`、`manual_charge`、`manual_charge_left`、`manual_charge_right`、`manual_reload`、`manual_feed`、`manual_force`、`manual_yaw`、`manual_fire` |
 | `channel` | str | 通道，如 `"CH6"`；`[待定]` 用 `null` |
 | `signal_type` | enum str | `SWITCH` / `JOYSTICK` |
 | `valid_range` | array&lt;int&gt; | 有效范围 |
@@ -457,7 +469,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 > 控制源选择结果与实际发射授权优先级（`SBUS > WEB > 自动流程`）是**两个独立的量**，
 > 混用会导致自动流程被误拒或 SBUS 检查被绕过（历史缺陷 `ATOM02-BUG-002`）。
 
-### 2.9 `gpio.*` —— GPIO 与传感器（`Config.md` §8）
+### 2.10 `gpio.*` —— GPIO 与传感器（`Config.md` §8）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -482,7 +494,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 
 压力传感器（`Config.md` §8.2）：本版本**不接入**，整段省略；仅保留 `baseline.pressure_sensor_enabled = false`。
 
-### 2.10 `servo.*` —— PCA9685A、IIC 与舵机（`Config.md` §9）
+### 2.11 `servo.*` —— PCA9685A、IIC 与舵机（`Config.md` §9）
 
 #### 2.10.1 PCA9685A（`servo.pca9685.*`，`Config.md` §9.1）
 
@@ -513,13 +525,13 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 
 | 元素键 | 类型 | 单位 | 说明 |
 |---|---|---|---|
-| `id` | int | — | 舵机编号 1–5（及发射舵机） |
-| `mechanism` | enum str | — | `RELOAD` / `FEED` / `FIRE` |
-| `channel` | int? | — | PCA9685A 通道；`[待定]` → `null` |
+| `id` | int? | — | FEED 舵机编号为 5；FIRE 舵机编号仍待定时写 `null` |
+| `mechanism` | enum str | — | `FEED` / `FIRE`；本版本换弹使用双 M3508，不占用舵机通道 |
+| `channel` | int | — | PCA9685A 通道；FEED 固定为 4，FIRE 固定为 5 |
 | `standby_deg` | int? | deg | 待机/基准角度；`[待定]` → `null` |
 | `action_deg` | int? | deg | 动作角度；`[待定]` → `null` |
 
-**`[待定]` 通道（舵机 1–5 及发射舵机）一律写 `null`**，`ATOM-07/10/11` **禁止**推断。
+当前已确定 PCA9685A 通道映射：`FEED=4`、`FIRE=5`。FIRE 的舵机编号、待机角度和发射角度仍为待定，继续写 `null`；ATOM-07/10/11 不得推断这些仍未确定的字段。
 
 #### 2.10.4 动作策略（`servo.strategy.*`，`Config.md` §9.3）
 
@@ -537,7 +549,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `servo.strategy.out_of_range_action` | str | `REJECT_AND_WARN`（`W-CMD-001`） |
 | `servo.strategy.action_failure_action` | str | `FAIL_AND_BLOCK_FIRE`（`F-SERVO-001`） |
 
-### 2.11 `vision.*` —— 视觉系统（`Config.md` §10）
+### 2.12 `vision.*` —— 视觉系统（`Config.md` §10）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -559,7 +571,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `vision.message_has_sequence` | bool | — | 消息是否带序号，`false` |
 | `vision.shot_scoped` | bool | — | 目标与到位是否以发次为作用域，`true` |
 
-### 2.12 `http.*` —— HTTP（`Config.md` §11）
+### 2.13 `http.*` —— HTTP（`Config.md` §11）
 
 #### 2.12.1 服务（`http.*`，`Config.md` §11.1）
 
@@ -603,7 +615,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 
 `action` 取值集合是 `Config.md` §11.4 的**唯一来源**，新增动作必须同步该表与 `Interface.md` §9.2。
 
-### 2.13 `websocket.*` —— WebSocket（`Config.md` §12）
+### 2.14 `websocket.*` —— WebSocket（`Config.md` §12）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -624,7 +636,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 `websocket.heartbeat_message` 给出心跳信封结构；`websocket.envelope_fields` 给出信封字段顺序。
 `ATOM-17` **禁止**在代码中另行硬编码消息类型表或 payload 字段。
 
-### 2.14 `persistence.*` —— 持久化（`Config.md` §13）
+### 2.15 `persistence.*` —— 持久化（`Config.md` §13）
 
 | ID | 类型 | 说明 |
 |---|---|---|
@@ -653,7 +665,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 其中 PID 与预留变量的**值**存于其自身键（`motor[].pid.*`、`reserved_001`…`reserved_100`），
 不在此处重复。
 
-### 2.15 `fault.*` —— 故障与安全（`Config.md` §14）
+### 2.16 `fault.*` —— 故障与安全（`Config.md` §14）
 
 | ID | 类型 | 说明 |
 |---|---|---|
@@ -675,7 +687,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 > **禁止**新增 `Config.md` §14.2 之外的故障码。`W-VISION-002` 属正常回退路径，
 > `auto_recovery` 必须为 `false`。
 
-### 2.16 `thread.*` —— 线程与调度（`Config.md` §15）
+### 2.17 `thread.*` —— 线程与调度（`Config.md` §15）
 
 | ID | 类型 | 说明 |
 |---|---|---|
@@ -696,7 +708,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 | `thread.sched_policy` | str | `SCHED_OTHER` |
 | `thread.stack_size_bytes` | int | 线程栈大小（1 MiB） |
 
-### 2.17 `log.*` —— 日志与诊断（`Config.md` §16）
+### 2.18 `log.*` —— 日志与诊断（`Config.md` §16）
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
@@ -735,10 +747,14 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
     { "id": 5, "role": "yaw", "bus": "CAN0", "node": "0x205", "pid": { "...": "..." } },
     { "id": 6, "role": "force", "bus": "CAN0", "node": "0x206", "pid": { "...": "..." } }
   ],
+  "charge":      { "charge_speed_rpm": 5000, "home_speed_rpm": 5000 },
   "can":        { "interface": "CAN0", "bitrate": "1Mbps", "frames": [ "..." ] },
   "sbus":       { "serial_device": "/dev/ttyS10", "functions": [ "..." ] },
   "gpio":       { "limit_switch": [ { "id": 1, "pin": null, "motor_id": 1 } ] },
-  "servo":      { "pca9685": { "i2c_device": "/dev/i2c-7" }, "channels": [ "..." ] },
+  "servo":      { "channels": [
+    { "id": 5, "mechanism": "FEED", "channel": 4 },
+    { "id": null, "mechanism": "FIRE", "channel": 5 }
+  ] },
   "vision":     { "port": 10001, "target_field": "yaw_speed" },
   "http":       { "port": 10000, "routes": [ "..." ] },
   "websocket":  { "message_version": "1.0" },
@@ -775,7 +791,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 1 | **舵机参数归口** | `Config.md` §5.6 与 §9.2 两处均记舵机角度。本文件按 §5.6 组织（对应 `servo_mechanisms`），需确认 §9.2 是否仅冗余 |
+| 1 | **舵机参数归口** | `Config.md` §5.7 与 §9.2 两处均记供弹/发射舵机角度。本文件按 §5.7 组织（对应 `servo_mechanisms` 的 `feed`/`fire`），需确认 §9.2 是否仅冗余 |
 | 2 | **`schema_version` 与 `persistence.version_migration` 的关系** | 前者为 `const 1`，后者为 `false`；需确认两者语义不冲突（前者是结构版本，后者是迁移策略） |
 | 3 | **`Design/Config.md` 章节号复核** | 本文件的来源引用按编制时的章节号给出；`Design/Config.md` 已升版，若有章节号变动需逐条校正（数值引用不受影响） |
 | 4 | **`servo_mechanisms` 与 `servo.channels` 的重复** | 两处都记舵机角度/通道；需确认哪一份是权威，避免同值两写 |
@@ -791,5 +807,9 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 | 1.2 | 2026-10-11 | 新增 `sbus.channel_scale_x` 必填配置，类型为整数，范围 1～10；明确所有连续 SBUS 通道共用该缩放变量，并同步更新 JSON Schema。 |
 | 1.3 | 2026-10-14 | 补齐 `timing.can_comm_timeout_ms` 的必需性、初始值 200、范围 1～6000 和热修改规则，并同步 JSON Schema 与初始配置。 |
 | 1.4 | 2026-10-14 | 将 `motor[].role` 同步为现有六电机角色，修正电机标识说明；保持数组按 id 标识，不依赖数组顺序；不变更初始配置、PID 数值或其他校验约束。 |
+| 1.5 | 2026-10-14 | 新增 `charge.charge_speed_rpm` 与 `charge.home_speed_rpm`，默认值均为 5000；确定 `servo.channels[]` 的 `FEED=4`、`FIRE=5` PCA9685A 通道映射，并保留 FIRE 舵机编号及角度字段的待定状态。 |
+| 1.6 | 2026-10-14 | **统一 SBUS 变力通道标准**：`force.target_default_source` 由 `SBUS_CH3` 修正为 `SBUS_CH12`（CH12 为变力专用映射，不使用通用 `x`），并同步 `Rule/ConfigSchema.schema.json` 的取值约束。 |
+| 1.7 | 2026-10-14 | 按 `Config.md` §5.7 更正 §2.7.1：换弹机构为**左右两台 M3508**，原「`reload[]` 四个舵机」键结构作废；§5 待裁决第 1 项章节号 §5.6 → §5.7。`servo_mechanisms.reload[]` 与初始 JSON 的键结构迁移待确认，未在本版实施。 |
+| 1.8 | 2026-10-14 | 落实蓄力 P1/P2、SBUS CH8/CH9 映射、ATOM-07 完整舵机配置与 IIC/线程配置；新增变力 `center_deadband_rpm` 和固定 `center_action=ZERO_TORQUE`，`ZERO_SPEED` 仅保留为扩展说明。 |
 
 
