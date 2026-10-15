@@ -33,6 +33,8 @@ const char* kMinimalValidConfig = R"({
   "schema_version": 1,
   "baseline": {
     "auto_total_shots": 4,
+    "initial_control_source": "AUTO",
+    "stop_fire_default": true,
     "time_base": "MONOTONIC"
   },
   "mode": {
@@ -149,7 +151,7 @@ const char* kMinimalValidConfig = R"({
   "persistence": {
     "file_format": "JSON",
     "directory": "./Config",
-    "file_name": "dart_control.nlohmann",
+    "file_name": "dart_control.json",
     "reserved_variable_count": 100
   }
 })";
@@ -263,6 +265,25 @@ void TestConfigStoreLoadMissingFile()
     const auto result = store.load("nonexistent_config_file.nlohmann");
 
     Check(!result.success, "reject missing file");
+}
+
+void TestConfigStoreLoadInvalidSchema()
+{
+    const char* temp_file = "test_config_invalid_schema.nlohmann";
+    {
+        std::ofstream out(temp_file);
+        out << kMissingRequiredField;
+    }
+
+    ConfigStore store;
+    const auto result = store.load(temp_file);
+
+    std::remove(temp_file);
+
+    Check(!result.success, "reject schema-violating config");
+    Check(result.error == ConfigError::INVALID_SCHEMA, "schema violation reports INVALID_SCHEMA");
+    Check(!result.diagnostics.empty(), "schema violation carries diagnostics");
+    Check(!store.isLoaded(), "schema violation leaves store unloaded");
 }
 
 void TestConfigStoreGetString()
@@ -467,9 +488,14 @@ void TestCanCommTimeoutLoad()
               "missing, mistyped or out-of-range CAN timeout rejected");
         Check(!store.isLoaded() && store.configVersion() == 0,
               "failed load leaves store unloaded");
+        // Schema 诊断使用 JSON Pointer：值错误定位到 "/timing/can_comm_timeout_ms"，
+        // 必需字段缺失定位到父对象 "/timing"。
         Check(std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
-                          [](const auto& d) { return d.key == kCanTimeoutKey; }),
-              "CAN timeout diagnostic contains full field path");
+                          [](const auto& d) {
+                              return d.key.find("can_comm_timeout_ms") != std::string::npos ||
+                                     d.key == "/timing";
+                          }),
+              "CAN timeout diagnostic identifies the failing field");
         std::int64_t value = 77;
         Check(store.getInt(kCanTimeoutKey, value) == ConfigStatus::NOT_LOADED && value == 77,
               "failed load does not fabricate a default");
@@ -665,6 +691,8 @@ int main(int argc, char** argv)
             TestConfigStoreLoadInvalidJson();
         } else if (case_name == "config.store_load_missing_file") {
             TestConfigStoreLoadMissingFile();
+        } else if (case_name == "config.store_load_invalid_schema") {
+            TestConfigStoreLoadInvalidSchema();
         } else if (case_name == "config.store_get_string") {
             TestConfigStoreGetString();
         } else if (case_name == "config.store_get_int") {

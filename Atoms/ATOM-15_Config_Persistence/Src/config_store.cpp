@@ -1,325 +1,130 @@
 #include "atom15_config/config_store.hpp"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
 #include <fstream>
-#include <initializer_list>
 #include <limits>
-#include <map>
 #include <mutex>
-#include <regex>
+#include <set>
 #include <shared_mutex>
 #include <sstream>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include "nlohmann/json.hpp"
+#include "nlohmann/json-schema.hpp"
+#include "config_schema_embed.hpp"
 namespace marshland::atom15 {
 namespace {
-struct JsonValue final {
-    enum class Kind : std::uint8_t { Null, Boolean, Integer, Number, String, Array, Object };
-    Kind kind{Kind::Null}; bool boolean_value{false}; std::int64_t integer_value{0}; double number_value{0};
-    std::string string_value; std::vector<JsonValue> array_value; std::map<std::string, JsonValue, std::less<>> object_value;
-    static JsonValue null() { return {}; }
-    static JsonValue boolean(bool v) { JsonValue x; x.kind=Kind::Boolean; x.boolean_value=v; return x; }
-    static JsonValue integer(std::int64_t v) { JsonValue x; x.kind=Kind::Integer; x.integer_value=v; return x; }
-    static JsonValue number(double v) { JsonValue x; x.kind=Kind::Number; x.number_value=v; return x; }
-    static JsonValue string(std::string v) { JsonValue x; x.kind=Kind::String; x.string_value=std::move(v); return x; }
-    static JsonValue array() { JsonValue x; x.kind=Kind::Array; return x; }
-    static JsonValue object() { JsonValue x; x.kind=Kind::Object; return x; }
-};
-class Parser final {
-public:
-    explicit Parser(std::string_view text): text_(text) {}
-    bool parse(JsonValue& out, std::string& error) { skip(); if (!value(out,error)) return false; skip(); if (pos_ != text_.size()) { error="trailing data"; return false; } return true; }
-private:
-    void skip() noexcept { while(pos_<text_.size() && (text_[pos_]==' '||text_[pos_]=='\n'||text_[pos_]=='\r'||text_[pos_]=='\t')) ++pos_; }
-    bool eat(char c) noexcept { if(pos_<text_.size() && text_[pos_]==c) { ++pos_; return true; } return false; }
-    bool literal(std::string_view s, JsonValue v, JsonValue& out, std::string& e) { if(text_.substr(pos_,s.size())!=s) { e="invalid literal"; return false; } pos_+=s.size(); out=std::move(v); return true; }
-    bool value(JsonValue& out, std::string& e) {
-        skip(); if(pos_>=text_.size()) { e="unexpected end"; return false; }
-        switch(text_[pos_]) { case '{': return object(out,e); case '[': return array(out,e); case '"': { std::string s; if(!string(s,e)) return false; out=JsonValue::string(std::move(s)); return true; } case 't': return literal("true",JsonValue::boolean(true),out,e); case 'f': return literal("false",JsonValue::boolean(false),out,e); case 'n': return literal("null",JsonValue::null(),out,e); default: return number(out,e); }
-    }
-    bool object(JsonValue& out, std::string& e) {
-        out=JsonValue::object(); ++pos_; skip(); if(eat('}')) return true;
-        while(pos_<text_.size()) { std::string key; if(!string(key,e)) return false; skip(); if(!eat(':')) { e="expected ':'"; return false; } JsonValue v; if(!value(v,e)) return false; if(!out.object_value.emplace(key,std::move(v)).second) { e="duplicate key: "+key; return false; } skip(); if(eat('}')) return true; if(!eat(',')) { e="expected ',' or '}'"; return false; } skip(); }
-        e="unterminated object"; return false;
-    }
-    bool array(JsonValue& out, std::string& e) {
-        out=JsonValue::array(); ++pos_; skip(); if(eat(']')) return true;
-        while(pos_<text_.size()) { JsonValue v; if(!value(v,e)) return false; out.array_value.push_back(std::move(v)); skip(); if(eat(']')) return true; if(!eat(',')) { e="expected ',' or ']'"; return false; } skip(); }
-        e="unterminated array"; return false;
-    }
-    bool string(std::string& out, std::string& e) {
-        if(!eat('"')) { e="expected string"; return false; } out.clear();
-        const auto hex = [](char c) noexcept -> int {
-            if(c>='0'&&c<='9') return c-'0';
-            if(c>='a'&&c<='f') return c-'a'+10;
-            if(c>='A'&&c<='F') return c-'A'+10;
-            return -1;
-        };
-        const auto appendUtf8 = [&out](std::uint32_t cp) {
-            if(cp<=0x7fU) out.push_back(static_cast<char>(cp));
-            else if(cp<=0x7ffU) { out.push_back(static_cast<char>(0xc0U|(cp>>6U))); out.push_back(static_cast<char>(0x80U|(cp&0x3fU))); }
-            else if(cp<=0xffffU) { out.push_back(static_cast<char>(0xe0U|(cp>>12U))); out.push_back(static_cast<char>(0x80U|((cp>>6U)&0x3fU))); out.push_back(static_cast<char>(0x80U|(cp&0x3fU))); }
-            else { out.push_back(static_cast<char>(0xf0U|(cp>>18U))); out.push_back(static_cast<char>(0x80U|((cp>>12U)&0x3fU))); out.push_back(static_cast<char>(0x80U|((cp>>6U)&0x3fU))); out.push_back(static_cast<char>(0x80U|(cp&0x3fU))); }
-        };
-        while(pos_<text_.size()) {
-            const char c=text_[pos_++];
-            if(c=='"') return true;
-            if(c=='\\') {
-                if(pos_>=text_.size()) { e="unterminated escape"; return false; }
-                const char q=text_[pos_++];
-                switch(q) {
-                case '"': out+='"'; break; case '\\': out+='\\'; break; case '/': out+='/'; break;
-                case 'b': out+='\b'; break; case 'f': out+='\f'; break; case 'n': out+='\n'; break;
-                case 'r': out+='\r'; break; case 't': out+='\t'; break;
-                case 'u': {
-                    if(pos_+4>text_.size()) { e="incomplete unicode escape"; return false; }
-                    std::uint32_t cp=0;
-                    for(int i=0;i<4;++i) { const int digit=hex(text_[pos_++]); if(digit<0) { e="invalid unicode escape"; return false; } cp=(cp<<4U)|static_cast<std::uint32_t>(digit); }
-                    if(cp>=0xd800U&&cp<=0xdbffU) {
-                        if(pos_+6>text_.size()||text_[pos_++]!='\\'||text_[pos_++]!='u') { e="missing unicode surrogate pair"; return false; }
-                        std::uint32_t low=0; for(int i=0;i<4;++i) { const int digit=hex(text_[pos_++]); if(digit<0) { e="invalid unicode surrogate"; return false; } low=(low<<4U)|static_cast<std::uint32_t>(digit); }
-                        if(low<0xdc00U||low>0xdfffU) { e="invalid unicode surrogate pair"; return false; }
-                        cp=0x10000U+((cp-0xd800U)<<10U)+(low-0xdc00U);
-                    } else if(cp>=0xdc00U&&cp<=0xdfffU) { e="unexpected low surrogate"; return false; }
-                    appendUtf8(cp); break;
-                }
-                default: e="unsupported escape"; return false;
-                }
-            } else if(static_cast<unsigned char>(c)<0x20U) { e="control character"; return false; }
-            else out+=c;
-        }
-        e="unterminated string"; return false;
-    }
-    bool number(JsonValue& out, std::string& e) {
-        const auto begin=pos_; if(pos_<text_.size()&&text_[pos_]=='-') ++pos_; if(pos_>=text_.size()||text_[pos_]<'0'||text_[pos_]>'9') { e="invalid number"; return false; }
-        if(text_[pos_]=='0') ++pos_; else while(pos_<text_.size()&&text_[pos_]>='0'&&text_[pos_]<='9') ++pos_; bool real=false;
-        if(pos_<text_.size()&&text_[pos_]=='.') { real=true; ++pos_; const auto fraction=pos_; while(pos_<text_.size()&&text_[pos_]>='0'&&text_[pos_]<='9') ++pos_; if(pos_==fraction) { e="digits required after decimal point"; return false; } }
-        if(pos_<text_.size()&&(text_[pos_]=='e'||text_[pos_]=='E')) { real=true; ++pos_; if(pos_<text_.size()&&(text_[pos_]=='+'||text_[pos_]=='-')) ++pos_; const auto exponent=pos_; while(pos_<text_.size()&&text_[pos_]>='0'&&text_[pos_]<='9') ++pos_; if(pos_==exponent) { e="digits required after exponent"; return false; } }
-        try { const std::string s(text_.substr(begin,pos_-begin)); std::size_t consumed=0; if(real) { const double value=std::stod(s,&consumed); if(consumed!=s.size()||!std::isfinite(value)) { e="invalid or non-finite number"; return false; } out=JsonValue::number(value); } else { const auto value=std::stoll(s,&consumed); if(consumed!=s.size()) { e="invalid integer"; return false; } out=JsonValue::integer(value); } return true; } catch(...) { e="number out of range"; return false; }
-    }
-    std::string_view text_; std::size_t pos_{0};
-};
-const JsonValue* member(const JsonValue* v, std::string_view key) noexcept { if(!v||v->kind!=JsonValue::Kind::Object) return nullptr; auto i=v->object_value.find(key); return i==v->object_value.end()?nullptr:&i->second; }
-JsonValue* member(JsonValue* v, std::string_view key) noexcept { if(!v||v->kind!=JsonValue::Kind::Object) return nullptr; auto i=v->object_value.find(key); return i==v->object_value.end()?nullptr:&i->second; }
-const JsonValue* findPath(const JsonValue& root, std::string_view key) noexcept { const JsonValue* v=&root; std::size_t b=0; while(b<key.size()) { const auto e=key.find('.',b); v=member(v,key.substr(b,e==std::string_view::npos?key.size()-b:e-b)); if(!v) return nullptr; if(e==std::string_view::npos) break; b=e+1; } return v; }
-JsonValue* mutablePath(JsonValue& root, std::string_view key) { JsonValue* v=&root; std::size_t b=0; while(b<key.size()) { const auto e=key.find('.',b); v=member(v,key.substr(b,e==std::string_view::npos?key.size()-b:e-b)); if(!v) return nullptr; if(e==std::string_view::npos) break; b=e+1; } return v; }
-bool integer(const JsonValue& v) noexcept { return v.kind==JsonValue::Kind::Integer; }
-bool number(const JsonValue& v) noexcept { return v.kind==JsonValue::Kind::Integer||v.kind==JsonValue::Kind::Number; }
+using nlohmann::json;
+// nlohmann parses non-negative integers above INT64_MAX as number_unsigned; the
+// previous hand-written parser rejected those as out of range, so treat them as
+// non-integers here as well.
+bool integer(const json& v) {
+    if(v.is_number_unsigned()) return v.get<std::uint64_t>()<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    return v.is_number_integer();
+}
+std::int64_t intValue(const json& v) { return v.is_number_unsigned()?static_cast<std::int64_t>(v.get<std::uint64_t>()):v.get<std::int64_t>(); }
+bool number(const json& v) { return v.is_number(); }
+const json* member(const json* v, std::string_view key) { if(!v||!v->is_object()) return nullptr; const auto i=v->find(key); return i==v->end()?nullptr:&*i; }
+json* member(json* v, std::string_view key) { if(!v||!v->is_object()) return nullptr; const auto i=v->find(key); return i==v->end()?nullptr:&*i; }
+const json* findPath(const json& root, std::string_view key) { const json* v=&root; std::size_t b=0; while(b<key.size()) { const auto e=key.find('.',b); v=member(v,key.substr(b,e==std::string_view::npos?key.size()-b:e-b)); if(!v) return nullptr; if(e==std::string_view::npos) break; b=e+1; } return v; }
+json* mutablePath(json& root, std::string_view key) { json* v=&root; std::size_t b=0; while(b<key.size()) { const auto e=key.find('.',b); v=member(v,key.substr(b,e==std::string_view::npos?key.size()-b:e-b)); if(!v) return nullptr; if(e==std::string_view::npos) break; b=e+1; } return v; }
 void diagnostic(std::vector<ConfigDiagnostic>& d, std::string key, std::string message) { d.push_back({std::move(key),std::move(message),false}); }
-bool requiredObject(const JsonValue* v, const char* key, std::vector<ConfigDiagnostic>& d) { if(!v) { diagnostic(d,key,"missing required object"); return false; } if(v->kind!=JsonValue::Kind::Object) { diagnostic(d,key,"expected object"); return false; } return true; }
-bool requiredMember(const JsonValue* object, const char* key, JsonValue::Kind kind, std::vector<ConfigDiagnostic>& d) { const auto v=member(object,key); if(!v) { diagnostic(d,key,"missing required value"); return false; } if(v->kind==JsonValue::Kind::Null) { diagnostic(d,key,"value is not implemented"); return false; } if(kind==JsonValue::Kind::Integer ? !integer(*v) : v->kind!=kind) { diagnostic(d,key,"invalid type"); return false; } return true; }bool integerRange(const JsonValue* object,const char* key,std::int64_t minimum,std::int64_t maximum,std::vector<ConfigDiagnostic>& d) { const auto v=member(object,key); if(!v) { diagnostic(d,key,"missing required value"); return false; } if(!integer(*v)) { diagnostic(d,key,"invalid type"); return false; } if(v->integer_value<minimum||v->integer_value>maximum) { diagnostic(d,key,"out of range"); return false; } return true; }
-bool nonEmptyString(const JsonValue* object,const char* key,std::vector<ConfigDiagnostic>& d) { const auto v=member(object,key); if(!v) { diagnostic(d,key,"missing required value"); return false; } if(v->kind!=JsonValue::Kind::String||v->string_value.empty()) { diagnostic(d,key,"must be a non-empty string"); return false; } return true; }
-const JsonValue* integerPath(const JsonValue& root, const char* path, std::int64_t minimum,
-                             std::int64_t maximum, std::vector<ConfigDiagnostic>& d) {
-    const auto value=findPath(root,path);
-    if(!value) diagnostic(d,path,"missing required value");
-    else if(!integer(*value)) diagnostic(d,path,"must be an integer");
-    else if(value->integer_value<minimum||value->integer_value>maximum) diagnostic(d,path,"out of range");
-    else return value;
-    return nullptr;
+// 编译期嵌入的 Rule/ConfigSchema.schema.json（见上层 CMakeLists 的嵌入段）。
+// validator 首次使用时编译一次并缓存；校验本身是 const 的，可在锁内复用。
+nlohmann::json_schema::json_validator& schemaValidator() {
+    static const auto validator=[] { return std::make_unique<nlohmann::json_schema::json_validator>(json::parse(kConfigSchemaJson)); }();
+    return *validator;
 }
-const JsonValue* stringPath(const JsonValue& root, const char* path,
-                            std::vector<ConfigDiagnostic>& d) {
-    const auto value=findPath(root,path);
-    if(!value) diagnostic(d,path,"missing required value");
-    else if(value->kind!=JsonValue::Kind::String) diagnostic(d,path,"must be a string");
-    else return value;
-    return nullptr;
-}
-void stringEnum(const JsonValue& root, const char* path,
-                std::initializer_list<std::string_view> choices, std::vector<ConfigDiagnostic>& d) {
-    const auto value=stringPath(root,path,d);
-    if(value&&std::find(choices.begin(),choices.end(),value->string_value)==choices.end())
-        diagnostic(d,path,"unsupported enum value");
-}
-const JsonValue* integerPair(const JsonValue& root, const char* path,
-                             std::vector<ConfigDiagnostic>& d) {
-    const auto value=findPath(root,path);
-    if(!value||value->kind!=JsonValue::Kind::Array||value->array_value.size()!=2||
-       !integer(value->array_value[0])||!integer(value->array_value[1])) {
-        diagnostic(d,path,"must contain exactly two integers");
-        return nullptr;
+class SchemaErrorCollector final : public nlohmann::json_schema::error_handler {
+public:
+    void error(const json::json_pointer& ptr, const json&, const std::string& message) override {
+        diagnostics_.push_back({ptr.empty()?std::string():ptr.to_string(),message,false});
     }
-    return value;
-}
-void validateServoSettings(const JsonValue& root, std::vector<ConfigDiagnostic>& d) {
-    if(requiredObject(findPath(root,"servo.pca9685"),"servo.pca9685",d)) {
-        static const std::regex devicePattern("^/dev/i2c-[0-9]+$");
-        static const std::regex addressPattern("^0x[0-9A-Fa-f]{2}$");
-        const auto device=stringPath(root,"servo.pca9685.i2c_device",d);
-        if(device&&!std::regex_match(device->string_value,devicePattern))
-            diagnostic(d,"servo.pca9685.i2c_device","expected /dev/i2c-N device path");
-        const auto address=stringPath(root,"servo.pca9685.address",d);
-        if(address) {
-            if(!std::regex_match(address->string_value,addressPattern))
-                diagnostic(d,"servo.pca9685.address","expected 0xNN address");
-            else {
-                const auto number=std::stoul(address->string_value,nullptr,16);
-                if(number<3||number>0x77) diagnostic(d,"servo.pca9685.address","must be a usable 7-bit IIC address (0x03..0x77)");
+    std::vector<ConfigDiagnostic> diagnostics_;
+};
+// JSON Schema 表达不了、且不与 Schema 冲突的跨字段/跨元素语义检查。
+void validateSemantics(const json& root, std::vector<ConfigDiagnostic>& d) {
+    const auto motors=member(&root,"motor");
+    if(motors&&motors->is_array()) {
+        std::vector<std::int64_t> ids; std::vector<std::string> nodes;
+        for(std::size_t i=0;i<motors->size();++i) {
+            const auto& m=(*motors)[i]; if(!m.is_object()) continue;
+            const auto p="motor["+std::to_string(i)+"]";
+            const auto id=member(&m,"id");
+            if(id&&integer(*id)) { if(std::find(ids.begin(),ids.end(),intValue(*id))!=ids.end()) diagnostic(d,p+".id","duplicate motor id"); ids.push_back(intValue(*id)); }
+            const auto node=member(&m,"node");
+            if(node&&node->is_string()) { const auto& s=node->get_ref<const std::string&>(); if(std::find(nodes.begin(),nodes.end(),s)!=nodes.end()) diagnostic(d,p+".node","duplicate motor node"); nodes.push_back(s); }
+        }
+    }
+    if(const auto sbus=member(&root,"sbus"); sbus&&sbus->is_object()) {
+        const auto min=member(sbus,"valid_min"); const auto max=member(sbus,"valid_max");
+        if(min&&max&&integer(*min)&&integer(*max)&&intValue(*min)>intValue(*max)) diagnostic(d,"sbus.valid_min","must not exceed valid_max");
+    }
+    if(const auto servo=member(&root,"servo"); servo&&servo->is_object()) {
+        if(const auto model=member(servo,"model"); model&&model->is_object()) {
+            const auto lo=member(model,"pulse_min_us"); const auto hi=member(model,"pulse_max_us");
+            if(lo&&hi&&integer(*lo)&&integer(*hi)&&intValue(*hi)<=intValue(*lo)) diagnostic(d,"servo.model.pulse_max_us","must exceed pulse_min_us");
+            const auto angles=member(model,"angle_range_deg");
+            if(angles&&angles->is_array()&&angles->size()==2&&integer((*angles)[0])&&integer((*angles)[1])&&intValue((*angles)[1])<=intValue((*angles)[0])) diagnostic(d,"servo.model.angle_range_deg","must be an increasing angle range");
+        }
+        if(const auto pca=member(servo,"pca9685"); pca&&pca->is_object()) {
+            const auto range=member(pca,"channel_range");
+            if(range&&range->is_array()&&range->size()==2&&integer((*range)[0])&&integer((*range)[1])) {
+                const auto low=intValue((*range)[0]); const auto high=intValue((*range)[1]);
+                if(low<0||high<low||high>=16) diagnostic(d,"servo.pca9685.channel_range","must be ordered within 0..15");
+                if(low>4||high<5) diagnostic(d,"servo.pca9685.channel_range","must include configured FEED/FIRE channels 4 and 5");
+            }
+            if(const auto freq=member(pca,"pwm_frequency_hz"); freq&&integer(*freq)) {
+                const double hz=static_cast<double>(intValue(*freq));
+                // Match the existing ATOM-07 prescale calculation without depending on its private headers.
+                const double prescale=std::round(25000000.0/(4096.0*hz))-1.0;
+                if(hz<24.0||hz>1526.0||prescale<3.0||prescale>255.0)
+                    diagnostic(d,"servo.pca9685.pwm_frequency_hz","unsupported PWM frequency or prescale outside 3..255");
             }
         }
-        integerPath(root,"servo.pca9685.channel_count",16,16,d);
-        integerPath(root,"servo.pca9685.pwm_resolution_bits",12,12,d);
-        const auto frequency=integerPath(root,"servo.pca9685.pwm_frequency_hz",1,INT64_MAX,d);
-        if(frequency) {
-            const double hz=static_cast<double>(frequency->integer_value);
-            // Match the existing ATOM-07 prescale calculation without depending on its private headers.
-            const double prescale=std::round(25000000.0/(4096.0*hz))-1.0;
-            if(hz<24.0||hz>1526.0||prescale<3.0||prescale>255.0)
-                diagnostic(d,"servo.pca9685.pwm_frequency_hz","unsupported PWM frequency or prescale outside 3..255");
-        }
-        const auto range=integerPair(root,"servo.pca9685.channel_range",d);
-        if(range) {
-            const auto low=range->array_value[0].integer_value;
-            const auto high=range->array_value[1].integer_value;
-            if(low<0||high<low||high>=16) diagnostic(d,"servo.pca9685.channel_range","must be ordered within 0..15");
-            if(low>4||high<5) diagnostic(d,"servo.pca9685.channel_range","must include configured FEED/FIRE channels 4 and 5");
-        }
-        stringEnum(root,"servo.pca9685.oe_active_level",{"LOW","HIGH"},d);
-        stringEnum(root,"servo.pca9685.access_mode",{"SERIALIZED"},d);
-        stringEnum(root,"servo.pca9685.task_priority",{"MEDIUM_HIGH"},d);
-        stringEnum(root,"servo.pca9685.error_handling",{"ENTER_FAULT"},d);
-    }
-    if(requiredObject(findPath(root,"servo.model"),"servo.model",d)) {
-        stringPath(root,"servo.model.name",d);
-        stringEnum(root,"servo.model.type",{"180_DEGREE"},d);
-        const auto low=integerPath(root,"servo.model.pulse_min_us",1,INT64_MAX,d);
-        const auto high=integerPath(root,"servo.model.pulse_max_us",1,INT64_MAX,d);
-        if(low&&high&&high->integer_value<=low->integer_value)
-            diagnostic(d,"servo.model.pulse_max_us","must exceed pulse_min_us");
-        const auto range=integerPair(root,"servo.model.angle_range_deg",d);
-        if(range&&(range->array_value[0].integer_value<0||
-                   range->array_value[1].integer_value<=range->array_value[0].integer_value||
-                   range->array_value[1].integer_value>180))
-            diagnostic(d,"servo.model.angle_range_deg","must be increasing within 0..180");
-    }
-    if(requiredObject(findPath(root,"servo.strategy"),"servo.strategy",d)) {
-        const std::pair<const char*,const char*> rules[]={
-            {"servo.strategy.reload_lift_group","USE_LIFT_ANGLES"},
-            {"servo.strategy.reload_lower_group","USE_LOWER_ANGLES"},
-            {"servo.strategy.feed_sequence","ANGLE1_TO_ANGLE2_TO_ANGLE1"},
-            {"servo.strategy.fire_sequence","STANDBY_TO_FIRE_TO_STANDBY"},
-            {"servo.strategy.estop_fire_servo","REJECT_ALL"},
-            {"servo.strategy.estop_other_servos","HOLD"},
-            {"servo.strategy.comm_fault_servos","HOLD"},
-            {"servo.strategy.recovery_other_servos","HOLD"},
-            {"servo.strategy.fire_servo_safe_hold","HOLD_CURRENT"},
-            {"servo.strategy.out_of_range_action","REJECT_AND_WARN"},
-            {"servo.strategy.action_failure_action","FAIL_AND_BLOCK_FIRE"}};
-        for(const auto& [path,value]:rules) stringEnum(root,path,{value},d);
     }
 }
-bool isReservedKey(std::string_view key) noexcept {
-    if(key.size()!=12||key.substr(0,9)!="reserved_") return false;
-    return key[9]>='0'&&key[9]<='9'&&key[10]>='0'&&key[10]<='9'&&key[11]>='0'&&key[11]<='9';
-}
-bool isKnownRootKey(std::string_view key) noexcept {
-    if(isReservedKey(key)) return true;
-    for(const auto known: {"schema_version","baseline","mode","timing","motor","charge","force","can","sbus","persistence","gpio","servo","vision","http","websocket","fault","thread","log"}) if(key==known) return true;
-    return false;
-}
-bool validate(const JsonValue& root, std::vector<ConfigDiagnostic>& d) {
-    if(root.kind!=JsonValue::Kind::Object) { diagnostic(d,"","root must be an object"); return false; }
-    for(const auto& [key,value]:root.object_value) if(!isKnownRootKey(key)) diagnostic(d,key,"unknown top-level property");
-    const auto schema=member(&root,"schema_version"); if(!schema||!integer(*schema)||schema->integer_value!=1) diagnostic(d,"schema_version","must be integer 1");
-    for(const char* key:{"baseline","mode","timing","motor","charge","force","can","sbus","persistence","servo","thread"}) if(!member(&root,key)) diagnostic(d,key,"missing required top-level section");
-    requiredObject(member(&root,"baseline"),"baseline",d); requiredObject(member(&root,"mode"),"mode",d); requiredObject(member(&root,"timing"),"timing",d); requiredObject(member(&root,"charge"),"charge",d); requiredObject(member(&root,"can"),"can",d); requiredObject(member(&root,"sbus"),"sbus",d); requiredObject(member(&root,"persistence"),"persistence",d); requiredObject(member(&root,"servo"),"servo",d); requiredObject(member(&root,"thread"),"thread",d);
-    for(const char* key:{"gpio","servo","vision","http","websocket","fault","thread","log"}) if(const auto section=member(&root,key); section&&section->kind!=JsonValue::Kind::Object) diagnostic(d,key,"must be an object");
-    const auto motors=member(&root,"motor");
-    if(!motors||motors->kind!=JsonValue::Kind::Array||motors->array_value.empty()) diagnostic(d,"motor","must be a non-empty array");
-    std::vector<std::int64_t> motorIds; std::vector<std::int64_t> motorNodes;
-    if(motors&&motors->kind==JsonValue::Kind::Array) for(std::size_t i=0;i<motors->array_value.size();++i) {
-        const auto& m=motors->array_value[i]; const auto p="motor["+std::to_string(i)+"]";
-        if(m.kind!=JsonValue::Kind::Object) { diagnostic(d,p,"must be an object"); continue; }
-        for(const char* key:{"id","role","bus","node","target_unit","pid"}) if(!member(&m,key)) diagnostic(d,p+"."+key,"missing required motor field");
-        const auto id=member(&m,"id"); if(id&&integer(*id)) { if(std::find(motorIds.begin(),motorIds.end(),id->integer_value)!=motorIds.end()) diagnostic(d,p+".id","duplicate motor id"); motorIds.push_back(id->integer_value); }
-        const auto node=member(&m,"node"); if(node&&integer(*node)) { if(std::find(motorNodes.begin(),motorNodes.end(),node->integer_value)!=motorNodes.end()) diagnostic(d,p+".node","duplicate motor node"); motorNodes.push_back(node->integer_value); }
-        const auto pid=member(&m,"pid"); if(pid&&pid->kind==JsonValue::Kind::Object) { for(const char* key:{"kp","ki","kd","integral_limit","output_limit","control_period_ms"}) requiredMember(pid,key,JsonValue::Kind::Integer,d); requiredMember(pid,"enabled",JsonValue::Kind::Boolean,d); const auto period=member(pid,"control_period_ms"); if(period&&integer(*period)&&period->integer_value<=0) diagnostic(d,p+".pid.control_period_ms","must be positive"); }
+bool validate(const json& root, std::vector<ConfigDiagnostic>& d) {
+    try {
+        SchemaErrorCollector collector;
+        schemaValidator().validate(root,collector);
+        for(auto& entry:collector.diagnostics_) d.push_back(std::move(entry));
+    } catch(const std::exception& e) {
+        diagnostic(d,"",std::string("schema validation failed internally: ")+e.what());
     }
-    const auto charge=member(&root,"charge"); if(charge&&charge->kind==JsonValue::Kind::Object) { requiredMember(charge,"charge_speed_rpm",JsonValue::Kind::Integer,d); requiredMember(charge,"home_speed_rpm",JsonValue::Kind::Integer,d); const auto target=member(charge,"target_range"); if(target&&(!integer(*target)||target->integer_value<=0)) diagnostic(d,"charge.target_range","must be a positive integer"); }
-    const auto force=member(&root,"force"); if(force&&force->kind==JsonValue::Kind::Object) { integerRange(force,"center_deadband_rpm",0,std::numeric_limits<std::int64_t>::max(),d); const auto action=member(force,"center_action"); if(!action||action->kind!=JsonValue::Kind::String||action->string_value!="ZERO_TORQUE") diagnostic(d,"force.center_action","must be ZERO_TORQUE"); }
-    const auto thread=member(&root,"thread"); if(thread&&thread->kind==JsonValue::Kind::Object) { const auto access=member(thread,"iic_access"); if(!access||access->kind!=JsonValue::Kind::String||access->string_value!="SERIALIZED") diagnostic(d,"thread.iic_access","must be SERIALIZED"); const auto priority=member(thread,"iic_priority"); if(!priority||priority->kind!=JsonValue::Kind::String||priority->string_value!="MEDIUM_HIGH") diagnostic(d,"thread.iic_priority","must be MEDIUM_HIGH"); }
-    const auto sbus=member(&root,"sbus"); if(sbus&&sbus->kind==JsonValue::Kind::Object) {
-        nonEmptyString(sbus,"serial_device",d); integerRange(sbus,"channel_scale_x",1,10,d); integerRange(sbus,"frame_bytes",25,25,d); integerRange(sbus,"joystick_center",0,2047,d); integerRange(sbus,"valid_min",0,2047,d); integerRange(sbus,"valid_max",0,2047,d);
-        const auto min=member(sbus,"valid_min"); const auto max=member(sbus,"valid_max"); if(min&&max&&integer(*min)&&integer(*max)&&min->integer_value>max->integer_value) diagnostic(d,"sbus.valid_min","must not exceed valid_max");
-        const auto functions=member(sbus,"functions"); bool overall=false; bool left=false; bool right=false;
-        if(!functions||functions->kind!=JsonValue::Kind::Array) diagnostic(d,"sbus.functions","must be an array containing manual_charge CH2 and manual_charge_left/right CH8/CH9");
-        else for(const auto& item:functions->array_value) if(item.kind==JsonValue::Kind::Object) {
-            const auto name=member(&item,"name"); const auto channel=member(&item,"channel"); if(!name||!channel||name->kind!=JsonValue::Kind::String||channel->kind!=JsonValue::Kind::String) continue;
-            if(name->string_value=="manual_charge"&&channel->string_value=="CH2") overall=true;
-            if(name->string_value=="manual_charge_left"&&channel->string_value=="CH8") left=true;
-            if(name->string_value=="manual_charge_right"&&channel->string_value=="CH9") right=true;
-        }
-        if(!overall) diagnostic(d,"sbus.functions","missing manual_charge -> CH2 mapping"); if(!left) diagnostic(d,"sbus.functions","missing manual_charge_left -> CH8 mapping"); if(!right) diagnostic(d,"sbus.functions","missing manual_charge_right -> CH9 mapping");
-    }
-    const auto timing=member(&root,"timing");
-    if(timing&&timing->kind==JsonValue::Kind::Object) {
-        const auto firstDiagnostic=d.size();
-        integerRange(timing,"sbus_receive_period_ms",1,86400000,d);
-        integerRange(timing,"sbus_loss_timeout_ms",1,86400000,d);
-        integerRange(timing,"can_comm_timeout_ms",1,6000,d);
-        integerRange(timing,"iic_comm_timeout_ms",1,std::numeric_limits<std::int64_t>::max(),d);
-        integerRange(timing,"charge_max_action_ms",1,std::numeric_limits<std::int64_t>::max(),d);
-        integerRange(timing,"charge_home_max_action_ms",1,std::numeric_limits<std::int64_t>::max(),d);
-        for(auto i=firstDiagnostic;i<d.size();++i) d[i].key="timing."+d[i].key;
-    }
-    const auto persistence=member(&root,"persistence"); if(persistence&&persistence->kind==JsonValue::Kind::Object) { for(const char* key:{"file_format","directory","file_name"}) if(!member(persistence,key)) diagnostic(d,std::string("persistence.")+key,"missing required value"); const auto count=member(persistence,"reserved_variable_count"); if(count&&(!integer(*count)||count->integer_value!=100)) diagnostic(d,"persistence.reserved_variable_count","must be integer 100"); }
-    const auto servo=member(&root,"servo");
-    if(servo&&servo->kind==JsonValue::Kind::Object) {
-        validateServoSettings(root,d);
-        const auto exactString=[&](const JsonValue* object,const char* key,const char* path,const char* expected) {
-            const auto value=member(object,key); if(!value||value->kind!=JsonValue::Kind::String) { diagnostic(d,path,"must be a string"); return; } if(value->string_value!=expected) diagnostic(d,path,std::string("must be ")+expected);
-        };
-        const auto pca=member(servo,"pca9685");
-        if(!requiredObject(pca,"servo.pca9685",d)) {}
-        else {
-            nonEmptyString(pca,"i2c_device",d); nonEmptyString(pca,"address",d); integerRange(pca,"channel_count",16,16,d); integerRange(pca,"pwm_resolution_bits",12,12,d); integerRange(pca,"pwm_frequency_hz",1,std::numeric_limits<std::int64_t>::max(),d);
-            exactString(pca,"oe_active_level","servo.pca9685.oe_active_level","LOW"); exactString(pca,"access_mode","servo.pca9685.access_mode","SERIALIZED"); exactString(pca,"task_priority","servo.pca9685.task_priority","MEDIUM_HIGH"); exactString(pca,"error_handling","servo.pca9685.error_handling","ENTER_FAULT");
-            const auto range=member(pca,"channel_range"); if(!range||range->kind!=JsonValue::Kind::Array||range->array_value.size()!=2||!integer(range->array_value[0])||!integer(range->array_value[1])) diagnostic(d,"servo.pca9685.channel_range","must contain exactly two integers"); else if(range->array_value[0].integer_value<0||range->array_value[1].integer_value<range->array_value[0].integer_value||range->array_value[1].integer_value>=16) diagnostic(d,"servo.pca9685.channel_range","must be within 0..15");
-        }
-        const auto model=member(servo,"model");
-        if(!requiredObject(model,"servo.model",d)) {}
-        else {
-            nonEmptyString(model,"name",d); exactString(model,"type","servo.model.type","180_DEGREE"); integerRange(model,"pulse_min_us",1,std::numeric_limits<std::int64_t>::max(),d); integerRange(model,"pulse_max_us",1,std::numeric_limits<std::int64_t>::max(),d); const auto minPulse=member(model,"pulse_min_us"); const auto maxPulse=member(model,"pulse_max_us"); if(minPulse&&maxPulse&&integer(*minPulse)&&integer(*maxPulse)&&maxPulse->integer_value<=minPulse->integer_value) diagnostic(d,"servo.model.pulse_max_us","must exceed pulse_min_us"); const auto angles=member(model,"angle_range_deg"); if(!angles||angles->kind!=JsonValue::Kind::Array||angles->array_value.size()!=2||!integer(angles->array_value[0])||!integer(angles->array_value[1])) diagnostic(d,"servo.model.angle_range_deg","must contain exactly two integers"); else if(angles->array_value[0].integer_value<0||angles->array_value[1].integer_value<=angles->array_value[0].integer_value) diagnostic(d,"servo.model.angle_range_deg","must be an increasing angle range");
-        }
-        const auto strategy=member(servo,"strategy");
-        if(!requiredObject(strategy,"servo.strategy",d)) {}
-        else { exactString(strategy,"reload_lift_group","servo.strategy.reload_lift_group","USE_LIFT_ANGLES"); exactString(strategy,"reload_lower_group","servo.strategy.reload_lower_group","USE_LOWER_ANGLES"); exactString(strategy,"feed_sequence","servo.strategy.feed_sequence","ANGLE1_TO_ANGLE2_TO_ANGLE1"); exactString(strategy,"fire_sequence","servo.strategy.fire_sequence","STANDBY_TO_FIRE_TO_STANDBY"); exactString(strategy,"estop_fire_servo","servo.strategy.estop_fire_servo","REJECT_ALL"); exactString(strategy,"estop_other_servos","servo.strategy.estop_other_servos","HOLD"); exactString(strategy,"comm_fault_servos","servo.strategy.comm_fault_servos","HOLD"); exactString(strategy,"recovery_other_servos","servo.strategy.recovery_other_servos","HOLD"); exactString(strategy,"fire_servo_safe_hold","servo.strategy.fire_servo_safe_hold","HOLD_CURRENT"); exactString(strategy,"out_of_range_action","servo.strategy.out_of_range_action","REJECT_AND_WARN"); exactString(strategy,"action_failure_action","servo.strategy.action_failure_action","FAIL_AND_BLOCK_FIRE"); }
-        const auto channels=member(servo,"channels");
-        if(!channels||channels->kind!=JsonValue::Kind::Array||channels->array_value.size()!=2) diagnostic(d,"servo.channels","must contain exactly FEED and FIRE resources");
-        bool feed=false; bool fire=false;
-        if(channels&&channels->kind==JsonValue::Kind::Array) for(std::size_t i=0;i<channels->array_value.size();++i) {
-            const auto& item=channels->array_value[i]; const auto p="servo.channels["+std::to_string(i)+"]";
-            if(item.kind!=JsonValue::Kind::Object) { diagnostic(d,p,"must be an object"); continue; }
-            const auto mechanism=member(&item,"mechanism"); const auto channel=member(&item,"channel");
-            if(!mechanism||mechanism->kind!=JsonValue::Kind::String) { diagnostic(d,p+".mechanism","must be a string"); continue; }
-            if(!channel||!integer(*channel)||channel->integer_value<0||channel->integer_value>15) { diagnostic(d,p+".channel","must be an integer in 0..15"); continue; }
-            if(mechanism->string_value=="FEED") { if(feed) diagnostic(d,p+".mechanism","duplicate FEED resource"); feed=true; if(channel->integer_value!=4) diagnostic(d,p+".channel","FEED must use PCA9685A channel 4"); const auto id=member(&item,"id"); if(!id||!integer(*id)||id->integer_value!=5) diagnostic(d,p+".id","FEED servo id must be 5"); }
-            else if(mechanism->string_value=="FIRE") { if(fire) diagnostic(d,p+".mechanism","duplicate FIRE resource"); fire=true; if(channel->integer_value!=5) diagnostic(d,p+".channel","FIRE must use PCA9685A channel 5"); const auto id=member(&item,"id"); if(id&&id->kind!=JsonValue::Kind::Null&&!integer(*id)) diagnostic(d,p+".id","FIRE servo id must be integer or null"); }
-            else diagnostic(d,p+".mechanism","must be FEED or FIRE");
-        }
-        if(!feed) diagnostic(d,"servo.channels","missing FEED resource");
-        if(!fire) diagnostic(d,"servo.channels","missing FIRE resource");
-    }
-    for(const auto& [key,value]:root.object_value) if(isReservedKey(key)&&(!integer(value)||key<"reserved_001"||key>"reserved_100")) diagnostic(d,key,"reserved variable must be an int32-compatible reserved_001..reserved_100 value");
+    validateSemantics(root,d);
     return d.empty();
 }
-void serialize(const JsonValue& v, std::string& out) {
-    switch(v.kind) { case JsonValue::Kind::Null: out+="null"; break; case JsonValue::Kind::Boolean: out+=v.boolean_value?"true":"false"; break; case JsonValue::Kind::Integer: out+=std::to_string(v.integer_value); break; case JsonValue::Kind::Number: { std::ostringstream s; s.precision(17); s<<v.number_value; out+=s.str(); break; } case JsonValue::Kind::String: out.push_back('"'); for(const unsigned char c: v.string_value) { switch(c) { case '"': out+="\\\""; break; case '\\': out+="\\\\"; break; case '\b': out+="\\b"; break; case '\f': out+="\\f"; break; case '\n': out+="\\n"; break; case '\r': out+="\\r"; break; case '\t': out+="\\t"; break; default: if(c<0x20U) { char escaped[7]{}; std::snprintf(escaped,sizeof(escaped),"\\u%04x",c); out+=escaped; } else out.push_back(static_cast<char>(c)); } } out.push_back('"'); break; case JsonValue::Kind::Array: out.push_back('['); for(std::size_t i=0;i<v.array_value.size();++i) { if(i) out.push_back(','); serialize(v.array_value[i],out); } out.push_back(']'); break; case JsonValue::Kind::Object: out.push_back('{'); { bool first=true; for(const auto& [k,x]:v.object_value) { if(!first) out.push_back(','); first=false; serialize(JsonValue::string(k),out); out.push_back(':'); serialize(x,out); } } out.push_back('}'); break; }
-}
-JsonValue toJson(const ConfigValue& value) { return std::visit([](const auto& x)->JsonValue { using T=std::decay_t<decltype(x)>; if constexpr(std::is_same_v<T,std::int64_t>) return JsonValue::integer(x); else if constexpr(std::is_same_v<T,double>) return JsonValue::number(x); else if constexpr(std::is_same_v<T,bool>) return JsonValue::boolean(x); else return JsonValue::string(x); },value); }
-bool compatible(const JsonValue& current,const ConfigValue& value) noexcept { return std::visit([&](const auto& x) { using T=std::decay_t<decltype(x)>; if constexpr(std::is_same_v<T,std::int64_t>) return current.kind==JsonValue::Kind::Integer; else if constexpr(std::is_same_v<T,double>) return number(current); else if constexpr(std::is_same_v<T,bool>) return current.kind==JsonValue::Kind::Boolean; else return current.kind==JsonValue::Kind::String; },value); }
+// The library parser silently keeps the last value on duplicate object keys;
+// the previous hand-written parser rejected them, so track keys per object via
+// the parse callback to preserve that diagnostic.
+class DuplicateKeyTracker final {
+public:
+    bool operator()(int, json::parse_event_t event, json& value) {
+        if(event==json::parse_event_t::object_start) stack_.emplace_back();
+        else if(event==json::parse_event_t::object_end) { if(!stack_.empty()) stack_.pop_back(); }
+        else if(event==json::parse_event_t::key&&!stack_.empty()) {
+            const auto& key=value.get_ref<const std::string&>();
+            if(!stack_.back().insert(key).second&&duplicate_.empty()) duplicate_=key;
+        }
+        return true;
+    }
+    const std::string& duplicate() const noexcept { return duplicate_; }
+private:
+    std::vector<std::set<std::string>> stack_; std::string duplicate_;
+};
+json toJson(const ConfigValue& value) { return std::visit([](const auto& x)->json { return json(x); },value); }
+bool compatible(const json& current,const ConfigValue& value) { return std::visit([&](const auto& x) { using T=std::decay_t<decltype(x)>; if constexpr(std::is_same_v<T,std::int64_t>) return integer(current); else if constexpr(std::is_same_v<T,double>) return number(current); else if constexpr(std::is_same_v<T,bool>) return current.is_boolean(); else return current.is_string(); },value); }
 bool allowed(UpdateSource source,UpdateMode mode) noexcept { return source==UpdateSource::WEB&&(mode==UpdateMode::MANUAL||mode==UpdateMode::DEBUG); }
 const char* errorName(ConfigError e) noexcept { switch(e) { case ConfigError::OK:return "OK"; case ConfigError::FILE_NOT_FOUND:return "FILE_NOT_FOUND"; case ConfigError::FILE_IO:return "FILE_IO"; case ConfigError::INVALID_JSON:return "INVALID_JSON"; case ConfigError::INVALID_SCHEMA:return "INVALID_SCHEMA"; case ConfigError::NOT_LOADED:return "NOT_LOADED"; case ConfigError::MISSING:return "MISSING"; case ConfigError::INVALID_TYPE:return "INVALID_TYPE"; case ConfigError::OUT_OF_RANGE:return "OUT_OF_RANGE"; case ConfigError::NOT_AUTHORIZED:return "NOT_AUTHORIZED"; case ConfigError::PERSISTENCE_FAILED:return "PERSISTENCE_FAILED"; case ConfigError::LIMIT_REACHED:return "LIMIT_REACHED"; case ConfigError::NOT_FOUND:return "NOT_FOUND"; } return "UNKNOWN"; }
 std::string reservedKey(std::uint32_t index) { return std::string("reserved_")+(index<10?"00":index<100?"0":"")+std::to_string(index); }
 } // namespace
-struct ConfigStore::Impl final { mutable std::shared_mutex mutex; std::shared_ptr<JsonValue> snapshot; std::filesystem::path file_path; std::vector<ConfigDiagnostic> diagnostics; ChangeCallback callback; std::uint64_t version{0}; };
+struct ConfigStore::Impl final { mutable std::shared_mutex mutex; std::shared_ptr<json> snapshot; std::filesystem::path file_path; std::vector<ConfigDiagnostic> diagnostics; ChangeCallback callback; std::uint64_t version{0}; };
 ConfigStore::ConfigStore(ChangeCallback callback):impl_(std::make_unique<Impl>()) { impl_->callback=std::move(callback); }
 ConfigStore::~ConfigStore()=default;
-ConfigLoadResult ConfigStore::load(const std::filesystem::path& file) { ConfigLoadResult r; std::ifstream input(file,std::ios::binary); if(!input) { r.error=std::filesystem::exists(file)?ConfigError::FILE_IO:ConfigError::FILE_NOT_FOUND; r.diagnostics.push_back({file.string(),errorName(r.error),false}); return r; } std::ostringstream b; b<<input.rdbuf(); JsonValue parsed; std::string error; if(!Parser(b.str()).parse(parsed,error)) { r.error=ConfigError::INVALID_JSON; r.diagnostics.push_back({"",error,false}); return r; } if(!validate(parsed,r.diagnostics)) { r.error=ConfigError::INVALID_SCHEMA; return r; } { std::unique_lock lock(impl_->mutex); impl_->snapshot=std::make_shared<JsonValue>(std::move(parsed)); impl_->file_path=file; impl_->diagnostics=r.diagnostics; ++impl_->version; } r.success=true; r.error=ConfigError::OK; return r; }
+ConfigLoadResult ConfigStore::load(const std::filesystem::path& file) { ConfigLoadResult r; std::ifstream input(file,std::ios::binary); if(!input) { r.error=std::filesystem::exists(file)?ConfigError::FILE_IO:ConfigError::FILE_NOT_FOUND; r.diagnostics.push_back({file.string(),errorName(r.error),false}); return r; } std::ostringstream b; b<<input.rdbuf(); json parsed; DuplicateKeyTracker tracker; try { parsed=json::parse(b.str(),std::ref(tracker)); } catch(const json::exception& e) { r.error=ConfigError::INVALID_JSON; r.diagnostics.push_back({"",e.what(),false}); return r; } if(!tracker.duplicate().empty()) { r.error=ConfigError::INVALID_JSON; r.diagnostics.push_back({"","duplicate key: "+tracker.duplicate(),false}); return r; } if(!validate(parsed,r.diagnostics)) { r.error=ConfigError::INVALID_SCHEMA; return r; } { std::unique_lock lock(impl_->mutex); impl_->snapshot=std::make_shared<json>(std::move(parsed)); impl_->file_path=file; impl_->diagnostics=r.diagnostics; ++impl_->version; } r.success=true; r.error=ConfigError::OK; return r; }
 ConfigLoadResult ConfigStore::reload() { std::filesystem::path p; { std::shared_lock lock(impl_->mutex); p=impl_->file_path; } if(p.empty()) return {false,ConfigError::NOT_LOADED,{{"","no configuration path",false}}}; return load(p); }
 std::filesystem::path ConfigStore::path() const { std::shared_lock lock(impl_->mutex); return impl_->file_path; }
 std::vector<ConfigDiagnostic> ConfigStore::diagnostics() const { std::shared_lock lock(impl_->mutex); return impl_->diagnostics; }
@@ -327,46 +132,42 @@ void ConfigStore::setChangeCallback(ChangeCallback callback) { std::unique_lock 
 PersistResult ConfigStore::updateRuntime(const char* key,const ConfigValue& value,UpdateSource source,UpdateMode mode) {
     if(!key||!*key) return {false,false,false,ConfigError::MISSING,"empty key"}; if(!allowed(source,mode)) return {false,false,false,ConfigError::NOT_AUTHORIZED,"only WEB in MANUAL or DEBUG may update"};
     ChangeCallback callback; std::uint64_t version=0; PersistResult result{false,false,false,ConfigError::NOT_LOADED,"configuration is not loaded"};
-    { std::unique_lock lock(impl_->mutex); if(!impl_->snapshot) return result; const JsonValue* original=mutablePath(*impl_->snapshot,key); if(!original) return {false,false,false,ConfigError::MISSING,"unknown configuration key"}; if(!compatible(*original,value)) return {false,false,false,ConfigError::INVALID_TYPE,"value type does not match"}; if(const auto numeric=std::get_if<double>(&value); numeric&&!std::isfinite(*numeric)) return {false,false,false,ConfigError::OUT_OF_RANGE,"value must be finite"}; JsonValue candidate=*impl_->snapshot; JsonValue* current=mutablePath(candidate,key); if(!current) return {false,false,false,ConfigError::MISSING,"unknown configuration key"}; *current=toJson(value); std::vector<ConfigDiagnostic> validation; if(!validate(candidate,validation)) return {false,false,false,ConfigError::OUT_OF_RANGE,validation.empty()?"updated value violates configuration schema":validation.front().key+": "+validation.front().message}; std::string text; serialize(candidate,text); impl_->snapshot=std::make_shared<JsonValue>(std::move(candidate)); ++impl_->version; version=impl_->version; callback=impl_->callback; result={true,true,false,ConfigError::PERSISTENCE_FAILED,"effective value updated but persistence failed"}; std::ofstream output(impl_->file_path,std::ios::binary|std::ios::trunc); if(output) { output<<text; result.persisted=static_cast<bool>(output); if(result.persisted) { result.error=ConfigError::OK; result.message="configuration updated"; } } }
+    { std::unique_lock lock(impl_->mutex); if(!impl_->snapshot) return result; const json* original=findPath(*impl_->snapshot,key); if(!original) return {false,false,false,ConfigError::MISSING,"unknown configuration key"}; if(!compatible(*original,value)) return {false,false,false,ConfigError::INVALID_TYPE,"value type does not match"}; if(const auto numeric=std::get_if<double>(&value); numeric&&!std::isfinite(*numeric)) return {false,false,false,ConfigError::OUT_OF_RANGE,"value must be finite"}; json candidate=*impl_->snapshot; json* current=mutablePath(candidate,key); if(!current) return {false,false,false,ConfigError::MISSING,"unknown configuration key"}; *current=toJson(value); std::vector<ConfigDiagnostic> validation; if(!validate(candidate,validation)) return {false,false,false,ConfigError::OUT_OF_RANGE,validation.empty()?"updated value violates configuration schema":validation.front().key+": "+validation.front().message}; const std::string text=candidate.dump(); impl_->snapshot=std::make_shared<json>(std::move(candidate)); ++impl_->version; version=impl_->version; callback=impl_->callback; result={true,true,false,ConfigError::PERSISTENCE_FAILED,"effective value updated but persistence failed"}; std::ofstream output(impl_->file_path,std::ios::binary|std::ios::trunc); if(output) { output<<text; result.persisted=static_cast<bool>(output); if(result.persisted) { result.error=ConfigError::OK; result.message="configuration updated"; } } }
     if(callback) callback(key,version); return result;
 }
 PidReadResult ConfigStore::readPid(std::int64_t motor_id) const {
-    PidReadResult r; std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) { r.message="configuration is not loaded"; return r; } const auto motors=member(impl_->snapshot.get(),"motor"); if(!motors||motors->kind!=JsonValue::Kind::Array) { r.error=ConfigError::INVALID_SCHEMA; r.message="motor is not an array"; return r; }
-    for(const auto& motor:motors->array_value) { const auto id=member(&motor,"id"); if(id&&integer(*id)&&id->integer_value==motor_id) { const auto pid=member(&motor,"pid"); if(!pid||pid->kind!=JsonValue::Kind::Object) { r.error=ConfigError::MISSING; r.message="motor PID is missing"; return r; } auto read=[&](const char* k,std::int64_t& x){const auto v=member(pid,k); if(!v||!integer(*v)) return false; x=v->integer_value; return true;}; if(!read("kp",r.value.kp)||!read("ki",r.value.ki)||!read("kd",r.value.kd)||!read("integral_limit",r.value.integral_limit)||!read("output_limit",r.value.output_limit)||!read("control_period_ms",r.value.control_period_ms)) { r.error=ConfigError::INVALID_TYPE; r.message="invalid PID integer"; return r; } const auto enabled=member(pid,"enabled"); if(!enabled||enabled->kind!=JsonValue::Kind::Boolean) { r.error=ConfigError::INVALID_TYPE; r.message="invalid PID enabled flag"; return r; } r.value.enabled=enabled->boolean_value; r.success=true; r.error=ConfigError::OK; return r; } }
+    PidReadResult r; std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) { r.message="configuration is not loaded"; return r; } const auto motors=member(impl_->snapshot.get(),"motor"); if(!motors||!motors->is_array()) { r.error=ConfigError::INVALID_SCHEMA; r.message="motor is not an array"; return r; }
+    for(const auto& motor:*motors) { const auto id=member(&motor,"id"); if(id&&integer(*id)&&intValue(*id)==motor_id) { const auto pid=member(&motor,"pid"); if(!pid||!pid->is_object()) { r.error=ConfigError::MISSING; r.message="motor PID is missing"; return r; } auto read=[&](const char* k,std::int64_t& x){const auto v=member(pid,k); if(!v||!integer(*v)) return false; x=intValue(*v); return true;}; if(!read("kp",r.value.kp)||!read("ki",r.value.ki)||!read("kd",r.value.kd)||!read("integral_limit",r.value.integral_limit)||!read("output_limit",r.value.output_limit)||!read("control_period_ms",r.value.control_period_ms)) { r.error=ConfigError::INVALID_TYPE; r.message="invalid PID integer"; return r; } const auto enabled=member(pid,"enabled"); if(!enabled||!enabled->is_boolean()) { r.error=ConfigError::INVALID_TYPE; r.message="invalid PID enabled flag"; return r; } r.value.enabled=enabled->get<bool>(); r.success=true; r.error=ConfigError::OK; return r; } }
     r.error=ConfigError::NOT_FOUND; r.message="motor id not found"; return r;
 }
 PersistResult ConfigStore::writePid(std::int64_t motor_id,const PidConfig& value,UpdateSource source,UpdateMode mode) {
     if(!allowed(source,mode)) return {false,false,false,ConfigError::NOT_AUTHORIZED,"only WEB in MANUAL or DEBUG may update PID"}; if(value.integral_limit<0||value.output_limit<0||value.control_period_ms<=0) return {false,false,false,ConfigError::OUT_OF_RANGE,"invalid PID limits or period"};
     ChangeCallback callback; std::uint64_t version=0; PersistResult result{false,false,false,ConfigError::NOT_LOADED,"configuration is not loaded"};
-    { std::unique_lock lock(impl_->mutex); if(!impl_->snapshot) return result; JsonValue candidate=*impl_->snapshot; auto motors=member(&candidate,"motor"); JsonValue* target=nullptr; if(motors&&motors->kind==JsonValue::Kind::Array) for(auto& motor:motors->array_value) { auto id=member(&motor,"id"); if(id&&integer(*id)&&id->integer_value==motor_id) target=&motor; } if(!target) return {false,false,false,ConfigError::NOT_FOUND,"motor id not found"}; auto pid=member(target,"pid"); if(!pid||pid->kind!=JsonValue::Kind::Object) return {false,false,false,ConfigError::MISSING,"motor PID is missing"}; const std::pair<const char*,JsonValue> fields[]={{"kp",JsonValue::integer(value.kp)},{"ki",JsonValue::integer(value.ki)},{"kd",JsonValue::integer(value.kd)},{"integral_limit",JsonValue::integer(value.integral_limit)},{"output_limit",JsonValue::integer(value.output_limit)},{"control_period_ms",JsonValue::integer(value.control_period_ms)},{"enabled",JsonValue::boolean(value.enabled)}}; for(const auto& [key,v]:fields) { auto field=member(pid,key); if(!field) return {false,false,false,ConfigError::MISSING,std::string("missing PID field: ")+key}; *field=v; } std::vector<ConfigDiagnostic> validation; if(!validate(candidate,validation)) return {false,false,false,ConfigError::OUT_OF_RANGE,validation.empty()?"PID violates configuration schema":validation.front().key+": "+validation.front().message}; std::string text; serialize(candidate,text); impl_->snapshot=std::make_shared<JsonValue>(std::move(candidate)); ++impl_->version; version=impl_->version; callback=impl_->callback; result={true,true,false,ConfigError::PERSISTENCE_FAILED,"effective PID updated but persistence failed"}; std::ofstream output(impl_->file_path,std::ios::binary|std::ios::trunc); if(output) { output<<text; result.persisted=static_cast<bool>(output); if(result.persisted) { result.error=ConfigError::OK; result.message="PID updated"; } } }
+    { std::unique_lock lock(impl_->mutex); if(!impl_->snapshot) return result; json candidate=*impl_->snapshot; auto motors=member(&candidate,"motor"); json* target=nullptr; if(motors&&motors->is_array()) for(auto& motor:*motors) { auto id=member(&motor,"id"); if(id&&integer(*id)&&intValue(*id)==motor_id) target=&motor; } if(!target) return {false,false,false,ConfigError::NOT_FOUND,"motor id not found"}; auto pid=member(target,"pid"); if(!pid||!pid->is_object()) return {false,false,false,ConfigError::MISSING,"motor PID is missing"}; const std::pair<const char*,json> fields[]={{"kp",json(value.kp)},{"ki",json(value.ki)},{"kd",json(value.kd)},{"integral_limit",json(value.integral_limit)},{"output_limit",json(value.output_limit)},{"control_period_ms",json(value.control_period_ms)},{"enabled",json(value.enabled)}}; for(const auto& [key,v]:fields) { auto field=member(pid,key); if(!field) return {false,false,false,ConfigError::MISSING,std::string("missing PID field: ")+key}; *field=v; } std::vector<ConfigDiagnostic> validation; if(!validate(candidate,validation)) return {false,false,false,ConfigError::OUT_OF_RANGE,validation.empty()?"PID violates configuration schema":validation.front().key+": "+validation.front().message}; const std::string text=candidate.dump(); impl_->snapshot=std::make_shared<json>(std::move(candidate)); ++impl_->version; version=impl_->version; callback=impl_->callback; result={true,true,false,ConfigError::PERSISTENCE_FAILED,"effective PID updated but persistence failed"}; std::ofstream output(impl_->file_path,std::ios::binary|std::ios::trunc); if(output) { output<<text; result.persisted=static_cast<bool>(output); if(result.persisted) { result.error=ConfigError::OK; result.message="PID updated"; } } }
     if(callback) callback("motor.pid",version); return result;
 }
-PersistResult ConfigStore::readReserved(std::uint32_t index,std::int32_t& value) const { if(index==0||index>100) return {false,false,false,ConfigError::OUT_OF_RANGE,"reserved index must be 1..100"}; std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return {false,false,false,ConfigError::NOT_LOADED,"configuration is not loaded"}; const auto v=member(impl_->snapshot.get(),reservedKey(index)); if(!v) return {false,false,false,ConfigError::NOT_FOUND,"reserved variable not found"}; if(!integer(*v)||v->integer_value<INT32_MIN||v->integer_value>INT32_MAX) return {false,false,false,ConfigError::INVALID_TYPE,"reserved variable is not int32"}; value=static_cast<std::int32_t>(v->integer_value); return {true,true,true,ConfigError::OK,"reserved variable read"}; }
+PersistResult ConfigStore::readReserved(std::uint32_t index,std::int32_t& value) const { if(index==0||index>100) return {false,false,false,ConfigError::OUT_OF_RANGE,"reserved index must be 1..100"}; std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return {false,false,false,ConfigError::NOT_LOADED,"configuration is not loaded"}; const auto v=member(impl_->snapshot.get(),reservedKey(index)); if(!v) return {false,false,false,ConfigError::NOT_FOUND,"reserved variable not found"}; if(!integer(*v)||intValue(*v)<INT32_MIN||intValue(*v)>INT32_MAX) return {false,false,false,ConfigError::INVALID_TYPE,"reserved variable is not int32"}; value=static_cast<std::int32_t>(intValue(*v)); return {true,true,true,ConfigError::OK,"reserved variable read"}; }
 PersistResult ConfigStore::writeReserved(std::uint32_t index,std::int32_t value,UpdateSource source,UpdateMode mode) {
     if(index==0||index>100) return {false,false,false,ConfigError::OUT_OF_RANGE,"reserved index must be 1..100"};
     if(!allowed(source,mode)) return {false,false,false,ConfigError::NOT_AUTHORIZED,"only WEB in MANUAL or DEBUG may update"};
     const auto key=reservedKey(index); ChangeCallback callback; std::uint64_t version=0; PersistResult result{false,false,false,ConfigError::NOT_LOADED,"configuration is not loaded"};
-    { std::unique_lock lock(impl_->mutex); if(!impl_->snapshot) return result; JsonValue candidate=*impl_->snapshot; candidate.object_value[key]=JsonValue::integer(value); std::vector<ConfigDiagnostic> validation; if(!validate(candidate,validation)) return {false,false,false,ConfigError::OUT_OF_RANGE,validation.empty()?"reserved variable violates configuration schema":validation.front().key+": "+validation.front().message}; std::string text; serialize(candidate,text); impl_->snapshot=std::make_shared<JsonValue>(std::move(candidate)); ++impl_->version; version=impl_->version; callback=impl_->callback; result={true,true,false,ConfigError::PERSISTENCE_FAILED,"effective reserved variable updated but persistence failed"}; std::ofstream output(impl_->file_path,std::ios::binary|std::ios::trunc); if(output) { output<<text; result.persisted=static_cast<bool>(output); if(result.persisted) { result.error=ConfigError::OK; result.message="reserved variable updated"; } } }
+    { std::unique_lock lock(impl_->mutex); if(!impl_->snapshot) return result; json candidate=*impl_->snapshot; candidate[key]=value; std::vector<ConfigDiagnostic> validation; if(!validate(candidate,validation)) return {false,false,false,ConfigError::OUT_OF_RANGE,validation.empty()?"reserved variable violates configuration schema":validation.front().key+": "+validation.front().message}; const std::string text=candidate.dump(); impl_->snapshot=std::make_shared<json>(std::move(candidate)); ++impl_->version; version=impl_->version; callback=impl_->callback; result={true,true,false,ConfigError::PERSISTENCE_FAILED,"effective reserved variable updated but persistence failed"}; std::ofstream output(impl_->file_path,std::ios::binary|std::ios::trunc); if(output) { output<<text; result.persisted=static_cast<bool>(output); if(result.persisted) { result.error=ConfigError::OK; result.message="reserved variable updated"; } } }
     if(callback) callback(key,version); return result;
 }
-config::ConfigStatus ConfigStore::getInt(const char* key,std::int64_t& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!integer(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->integer_value; return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
-config::ConfigStatus ConfigStore::getDouble(const char* key,double& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!number(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->kind==JsonValue::Kind::Integer?static_cast<double>(v->integer_value):v->number_value; return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
-config::ConfigStatus ConfigStore::getBool(const char* key,bool& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(v->kind!=JsonValue::Kind::Boolean) return config::ConfigStatus::INVALID_TYPE; out=v->boolean_value; return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
-config::ConfigStatus ConfigStore::getString(const char* key,const char*& data,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(v->kind!=JsonValue::Kind::String) return config::ConfigStatus::INVALID_TYPE; data=v->string_value.data(); size=v->string_value.size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
+config::ConfigStatus ConfigStore::getInt(const char* key,std::int64_t& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!integer(*v)) return config::ConfigStatus::INVALID_TYPE; out=intValue(*v); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
+config::ConfigStatus ConfigStore::getDouble(const char* key,double& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!number(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->get<double>(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
+config::ConfigStatus ConfigStore::getBool(const char* key,bool& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!v->is_boolean()) return config::ConfigStatus::INVALID_TYPE; out=v->get<bool>(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
+config::ConfigStatus ConfigStore::getString(const char* key,const char*& data,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!v->is_string()) return config::ConfigStatus::INVALID_TYPE; const auto& s=v->get_ref<const std::string&>(); data=s.data(); size=s.size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 bool ConfigStore::has(const char* key) const noexcept { try { std::shared_lock lock(impl_->mutex); return impl_->snapshot&&findPath(*impl_->snapshot,key?key:""); } catch(...) { return false; } }
-config::ConfigStatus ConfigStore::getArraySize(const char* key,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(v->kind!=JsonValue::Kind::Array) return config::ConfigStatus::INVALID_TYPE; size=v->array_value.size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
+config::ConfigStatus ConfigStore::getArraySize(const char* key,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto v=findPath(*impl_->snapshot,key?key:""); if(!v) return config::ConfigStatus::MISSING; if(!v->is_array()) return config::ConfigStatus::INVALID_TYPE; size=v->size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 
-template<class T> config::ConfigStatus arrayField(const JsonValue& root,const char* key,std::uint64_t index,const char* field,T& out) noexcept { const auto a=findPath(root,key?key:""); if(!a) return config::ConfigStatus::MISSING; if(a->kind!=JsonValue::Kind::Array||index>=a->array_value.size()) return config::ConfigStatus::OUT_OF_RANGE; const auto& element=a->array_value[static_cast<std::size_t>(index)]; const auto v=(field&&*field)?member(&element,field):&element; if(!v) return config::ConfigStatus::MISSING; if constexpr(std::is_same_v<T,std::int64_t>) { if(!integer(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->integer_value; } else if constexpr(std::is_same_v<T,double>) { if(!number(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->kind==JsonValue::Kind::Integer?static_cast<double>(v->integer_value):v->number_value; } else { if(v->kind!=JsonValue::Kind::Boolean) return config::ConfigStatus::INVALID_TYPE; out=v->boolean_value; } return config::ConfigStatus::OK; }
+template<class T> config::ConfigStatus arrayField(const json& root,const char* key,std::uint64_t index,const char* field,T& out) noexcept { const auto a=findPath(root,key?key:""); if(!a) return config::ConfigStatus::MISSING; if(!a->is_array()||index>=a->size()) return config::ConfigStatus::OUT_OF_RANGE; const auto& element=(*a)[static_cast<std::size_t>(index)]; const auto v=(field&&*field)?member(&element,field):&element; if(!v) return config::ConfigStatus::MISSING; if constexpr(std::is_same_v<T,std::int64_t>) { if(!integer(*v)) return config::ConfigStatus::INVALID_TYPE; out=intValue(*v); } else if constexpr(std::is_same_v<T,double>) { if(!number(*v)) return config::ConfigStatus::INVALID_TYPE; out=v->get<double>(); } else { if(!v->is_boolean()) return config::ConfigStatus::INVALID_TYPE; out=v->get<bool>(); } return config::ConfigStatus::OK; }
 config::ConfigStatus ConfigStore::getIntAt(const char* key,std::uint64_t index,const char* field,std::int64_t& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; return arrayField(*impl_->snapshot,key,index,field,out); } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 config::ConfigStatus ConfigStore::getDoubleAt(const char* key,std::uint64_t index,const char* field,double& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; return arrayField(*impl_->snapshot,key,index,field,out); } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 config::ConfigStatus ConfigStore::getBoolAt(const char* key,std::uint64_t index,const char* field,bool& out) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; return arrayField(*impl_->snapshot,key,index,field,out); } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
-config::ConfigStatus ConfigStore::getStringAt(const char* key,std::uint64_t index,const char* field,const char*& data,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto a=findPath(*impl_->snapshot,key?key:""); if(!a) return config::ConfigStatus::MISSING; if(a->kind!=JsonValue::Kind::Array||index>=a->array_value.size()) return config::ConfigStatus::OUT_OF_RANGE; const auto v=member(&a->array_value[static_cast<std::size_t>(index)],field?field:""); if(!v) return config::ConfigStatus::MISSING; if(v->kind!=JsonValue::Kind::String) return config::ConfigStatus::INVALID_TYPE; data=v->string_value.data(); size=v->string_value.size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
+config::ConfigStatus ConfigStore::getStringAt(const char* key,std::uint64_t index,const char* field,const char*& data,std::uint64_t& size) const noexcept { try { std::shared_lock lock(impl_->mutex); if(!impl_->snapshot) return config::ConfigStatus::NOT_LOADED; const auto a=findPath(*impl_->snapshot,key?key:""); if(!a) return config::ConfigStatus::MISSING; if(!a->is_array()||index>=a->size()) return config::ConfigStatus::OUT_OF_RANGE; const auto& element=(*a)[static_cast<std::size_t>(index)]; const auto v=(field&&*field)?member(&element,field):&element; if(!v) return config::ConfigStatus::MISSING; if(!v->is_string()) return config::ConfigStatus::INVALID_TYPE; const auto& s=v->get_ref<const std::string&>(); data=s.data(); size=s.size(); return config::ConfigStatus::OK; } catch(...) { return config::ConfigStatus::INVALID_TYPE; } }
 std::uint64_t ConfigStore::configVersion() const noexcept { try { std::shared_lock lock(impl_->mutex); return impl_->version; } catch(...) { return 0; } }
 bool ConfigStore::isLoaded() const noexcept { try { std::shared_lock lock(impl_->mutex); return static_cast<bool>(impl_->snapshot); } catch(...) { return false; } }
 runtime::ModuleInitResult LifecycleAdapter::initialize(const runtime::RuntimeContext& context) { const auto result=store_.load(context.configuration_path); runtime::ModuleInitResult output; output.module_name=name(); output.success=result.success; if(!result.success) output.error_message=result.diagnostics.empty()?errorName(result.error):result.diagnostics.front().key+": "+result.diagnostics.front().message; return output; }
 void LifecycleAdapter::shutdown() noexcept {}
 }
-
-
-
-

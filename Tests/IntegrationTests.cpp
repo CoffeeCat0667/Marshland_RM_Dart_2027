@@ -346,7 +346,7 @@ const char* kTestConfig = R"({
   "persistence": {
     "file_format": "JSON",
     "directory": "./Config",
-    "file_name": "dart_control.nlohmann",
+    "file_name": "dart_control.json",
     "write_mode": "PLAIN_FILE_WRITE",
     "power_loss_protection": false,
     "corruption_recovery": false,
@@ -544,11 +544,11 @@ void TestIntegrationMotorConfig6Motors()
 
     Check(load_status.success, "load motor config");
 
-    // Verify all 6 motors present
+    // Verify all 6 motors present（数组元素须经 getIntAt/getStringAt 读取，
+    // 点分路径 "motor.0.id" 不是 IConfigView 的合法键）
     for (int i = 0; i < 6; ++i) {
-        std::string motor_id_key = "motor." + std::to_string(i) + ".id";
         std::int64_t motor_id = 0;
-        const auto status = config_store.getInt(motor_id_key.c_str(), motor_id);
+        const auto status = config_store.getIntAt("motor", static_cast<std::uint64_t>(i), "id", motor_id);
 
         Check(status == marshland::config::ConfigStatus::OK, "motor exists");
         Check(motor_id == i + 1, "motor ID sequential");
@@ -557,15 +557,15 @@ void TestIntegrationMotorConfig6Motors()
     // Verify motor roles
     const char* motor0_role = nullptr;
     std::uint64_t role_size = 0;
-    config_store.getString("motor.0.role", motor0_role, role_size);
+    config_store.getStringAt("motor", 0, "role", motor0_role, role_size);
     Check(std::string_view(motor0_role, role_size) == "charge_right", "motor 0 role");
 
     const char* motor4_role = nullptr;
-    config_store.getString("motor.4.role", motor4_role, role_size);
+    config_store.getStringAt("motor", 4, "role", motor4_role, role_size);
     Check(std::string_view(motor4_role, role_size) == "yaw", "motor 4 role");
 
     const char* motor5_role = nullptr;
-    config_store.getString("motor.5.role", motor5_role, role_size);
+    config_store.getStringAt("motor", 5, "role", motor5_role, role_size);
     Check(std::string_view(motor5_role, role_size) == "force", "motor 5 role");
 }
 
@@ -583,16 +583,17 @@ void TestIntegrationCanZeroTorqueFrames()
     std::remove(temp_config);
 
     // Verify zero torque frames include both 0x200 and 0x1FF
+    // （标量字符串数组经 getStringAt 以空字段名读取元素）
     const char* frame0 = nullptr;
     std::uint64_t size0 = 0;
-    const auto status0 = config_store.getString("can.zero_torque.frames.0", frame0, size0);
+    const auto status0 = config_store.getStringAt("can.zero_torque.frames", 0, "", frame0, size0);
 
     Check(status0 == marshland::config::ConfigStatus::OK, "frame 0 exists");
     Check(std::string_view(frame0, size0) == "0x200", "frame 0 is 0x200");
 
     const char* frame1 = nullptr;
     std::uint64_t size1 = 0;
-    const auto status1 = config_store.getString("can.zero_torque.frames.1", frame1, size1);
+    const auto status1 = config_store.getStringAt("can.zero_torque.frames", 1, "", frame1, size1);
 
     Check(status1 == marshland::config::ConfigStatus::OK, "frame 1 exists");
     Check(std::string_view(frame1, size1) == "0x1FF", "frame 1 is 0x1FF");

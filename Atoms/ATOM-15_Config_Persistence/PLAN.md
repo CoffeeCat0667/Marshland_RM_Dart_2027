@@ -40,7 +40,7 @@ ATOM-03 通过构造注入 `const marshland::config::IConfigView&`，并检查 `
 
 ### 2.2 JSON 与校验
 
-`Src/config_store.cpp` 当前包含无第三方依赖的 JSON 解析、序列化和快照存储：
+`Src/config_store.cpp` 当前基于 nlohmann/json（vendored 单头）做 JSON 解析、序列化和快照存储（2026-10-15 起，原为无第三方依赖的手写解析器）：
 
 - JSON 对象、数组、字符串、整数、浮点数、布尔值和 `null`；
 - 重复对象键、非法 JSON 和文件错误可诊断；
@@ -99,7 +99,7 @@ wsl cmake --build cmake-build-ubuntu-arm \
 ## 5. 当前限制与后续风险
 
 1. 首版实现时没有 `Config/dart_control.json` 样例；当前已有初始配置，2026-10-14 已加入 CAN 通信超时键并完成静态检查。本次按用户要求不执行 ARM 程序，真实加载、PID 重启恢复和损坏文件行为不宣称已通过运行测试。
-2. 当前实现是轻量 JSON 解析器，尚未完整执行 `Rule/ConfigSchema.schema.json` 的所有 `additionalProperties`、枚举、正则、数组和语义范围约束；当前已覆盖启动必需结构、已知 ATOM-03 消费键和核心 PID/持久化字段。生产前建议接入经过批准的 JSON Schema 校验库或继续补齐逐字段校验。
+2. ~~当前实现是轻量 JSON 解析器~~（2026-10-15 已解决）：配置校验已切换为编译期嵌入的 `Rule/ConfigSchema.schema.json` + pboettch json-schema-validator，完整执行 `additionalProperties`、枚举、正则、数组与范围约束；仅保留 Schema 无法表达的薄语义层，见 §11。
 3. `effective` 更新与普通文件写入发生在同一更新操作中；文件写入失败时内存值仍然生效，并明确返回 `effective=true`、`persisted=false`。未实现自动重试，符合“不额外承诺”的设计边界。
 4. `ChangeCallback` 是本模块提供的窄事件回调；当前 `Public` 与 `Design/LifecycleEvents.md` 没有已落地的配置变更事件公共端口，因此没有擅自修改 `Public` 或复用状态事件接口。
 5. 其他 Atom 当前只有 ATOM-03 存在真实 C++ `IConfigView` 查询实现；其余模块的配置键消费仍主要停留在规范/计划文档层面。
@@ -224,3 +224,21 @@ const auto result = store.updateRuntime(
 | 0.7 | 2026-10-14 | 新增 `servo.channels[]` 的 FEED=4/FIRE=5 通道配置与 `charge` 两个 5000 rpm 速度键；同步 Schema、规则、设计配置、ATOM-15 校验和测试样例。 |
 | 0.8 | 2026-10-14 | 落实蓄力 P1/P2/P3、可选目标范围、完整 ATOM-07 舵机/IIC/线程配置，以及变力 Q-13 中位死区与零力矩处置；P4 左右配置键仍待用户选定。 |
 | 0.9 | 2026-10-14 | 将 `force` 和 `thread` 加入必需配置结构；完成 Q-13 校验、标量数组查询修复，并通过初始配置与集成样例 Schema 静态校验及 ARM 增量编译。 |
+| 1.0 | 2026-10-15 | JSON 解析/序列化切换为 nlohmann/json 3.12.0；配置校验切换为编译期嵌入的 ConfigSchema（pboettch json-schema-validator 2.4.0）+ 薄语义层；修复 getStringAt 标量字符串数组读取；同步测试样例。 |
+
+## 11. JSON 库与 Schema 校验化改造（2026-10-15）
+
+### 11.1 实现结构
+
+- JSON 解析/序列化：nlohmann/json 3.12.0（`ThirdParty/nlohmann/json.hpp`，`Marshland::ThirdPartyNlohmannJson`，PRIVATE）。重复键诊断由解析回调 `DuplicateKeyTracker` 保留；超过 INT64_MAX 的正整数按无符号溢出视为非法整数。
+- 配置校验：`Rule/ConfigSchema.schema.json` 经上层 CMake 编译期嵌入为 `marshland::atom15::kConfigSchemaJson`（`Marshland::ConfigSchemaEmbed`），由 pboettch json-schema-validator 2.4.0（`ThirdParty/pboettch`，`Marshland::ThirdPartyJsonSchemaValidator`，PRIVATE）首次加载时编译并缓存；错误经 `SchemaErrorCollector` 逐项转为 `ConfigDiagnostic`（JSON Pointer 路径）。
+- 薄语义层（Schema 表达不了且不冲突）：`motor[].id`/`node` 去重、`sbus.valid_min≤valid_max`、`pulse_max>pulse_min`、角度/通道区间有序且含 4/5 通道、PCA9685 prescale 公式。
+- `load()` 与 `updateRuntime/writePid/writeReserved` 共用同一两段式 `validate()`；热更新现在受完整 Schema 约束（const/枚举/范围均生效）。
+- 以 Schema 为准后删除的旧规则：`isKnownRootKey` 白名单、`frame_bytes==25`、timing 额外必需键、摇杆 0–2047、`estop_other_servos` 仅 HOLD。`sbus.frame_bytes` 的 25 字节约束自此完全由 ATOM-03 消费侧承担。
+- `getStringAt(..., "", ...)` 现支持标量字符串数组元素直读（与 `getIntAt` 行为对齐）。
+
+### 11.2 验证边界
+
+- WSL ARM 交叉增量编译通过：`marshland_thirdparty_json_schema_validator`、`atom_15_config_persistence`、`marshland`、`marshland_atom15_tests`、`marshland_integration_tests`、`marshland_gateway_tests`、`marshland_public_contracts_check`。
+- 静态核对：`Config/dart_control.json` 与两个测试样例逐节对照嵌入 Schema 通过（必需键、`additionalProperties:false`、`contains+allOf`、枚举、pattern）。
+- 未运行任何 ARM 二进制（WSL 无 qemu-aarch64）；pboettch 对本 Schema 用到的 `$defs` 引用、`contains+allOf`、联合类型、`patternProperties` 的运行期行为需在 ARM 主机或 qemu 上执行 `marshland_atom15_tests`/`marshland_integration_tests` 后方可宣称通过。新增手工用例入口 `marshland_atom15_tests config.store_load_invalid_schema`，未变更顶层 CTest 用例列表。

@@ -9,7 +9,7 @@
 | 程序代号 | Marshland |
 | 状态 | 启用 |
 | 来源 | PRD 7.1、9.2、16；Interface 2.3、16、20、21；Config 1、13、17 |
-| 同步基线 | PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8；2026-10-10 |
+| 同步基线 | PRD 0.10、PEF 1.5、Interface 1.5、Config 0.8；2026-10-10；实现状态补充 2026-10-15 |
 
 ## 单一职责
 
@@ -59,3 +59,12 @@
 - WEB 在手动/调试模式更新 PID 后运行时立即生效并持久化。
 - 其他控制源/模式不能修改 PID。
 - 重启后已保存的每电机 PID 参数可恢复。
+
+## 实现状态（2026-10-15，以代码事实为准）
+
+- 实现位于 `Atoms/ATOM-15_Config_Persistence`：`ConfigStore`（`IConfigView`）+ `LifecycleAdapter`（`ILifecycleModule`），Pimpl 隔离第三方类型。
+- JSON 解析/序列化：nlohmann/json 3.12.0（vendored 于 `ThirdParty/nlohmann`）；重复对象键经解析回调拒绝；超 INT64_MAX 正整数视为非法。
+- 配置校验：`Rule/ConfigSchema.schema.json` 由上层 CMake 编译期嵌入二进制，pboettch json-schema-validator 2.4.0（`ThirdParty/pboettch`）执行完整 Schema 校验；其外仅保留 Schema 无法表达的薄语义层（电机 id/node 去重、`valid_min≤valid_max`、`pulse_max>pulse_min`、区间有序性、PCA9685 prescale 公式）。
+- 运行时更新（`updateRuntime`/`writePid`/`writeReserved`）：仅 WEB 来源 + MANUAL/DEBUG 模式；候选快照经同一校验后才生效；`effective` 与 `persisted` 分开报告；热更新受完整 Schema 约束。
+- 与"配置文件原子操作"第 5 条的偏差：当前**不执行缺失参数的内置默认值回填**（Schema 中的 `default` 仅作注释性元数据），缺失必需项直接初始化失败；`persistence.missing_param_recovery: USE_BUILTIN_DEFAULT` 的回填行为尚未实现。
+- `sbus.frame_bytes==25` 的恒等约束不在 ATOM-15 侧执行（Schema 仅 `minimum:1`），由 ATOM-03 消费侧承担。

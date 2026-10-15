@@ -37,3 +37,16 @@ add_library(marshland_thirdparty_nlohmann_json INTERFACE)
 add_library(Marshland::ThirdPartyNlohmannJson ALIAS marshland_thirdparty_nlohmann_json)
 target_include_directories(marshland_thirdparty_nlohmann_json SYSTEM INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# --- json-schema-validator (pboettch) --------------------------------------
+# 集成逻辑收敛在 pboettch/CMakeLists.txt（已为本工程重写，不使用上游构建文件；
+# 该目标依赖上面的 Marshland::ThirdPartyNlohmannJson）
+
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pboettch/src/nlohmann/json-schema.hpp")
+    message(FATAL_ERROR
+        "ThirdParty: 缺少 pboettch/src/nlohmann/json-schema.hpp"
+        "（pboettch/json-schema-validator 2.4.0，"
+        "https://github.com/pboettch/json-schema-validator/releases）")
+endif()
+
+add_subdirectory(pboettch)

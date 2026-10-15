@@ -59,3 +59,23 @@ if(TARGET Marshland::PublicHeaders)
     target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE} Marshland::PublicHeaders)
 endif()
 
+# 必需第三方依赖（ThirdParty 约定：PRIVATE 链接，SYSTEM include）：
+#   Marshland::ThirdPartyNlohmannJson        — JSON 解析/序列化
+#   Marshland::ThirdPartyJsonSchemaValidator — Schema 校验（ThirdParty/pboettch）
+#   Marshland::ConfigSchemaEmbed             — 编译期嵌入的 ConfigSchema（上层 CMake 生成）
+foreach(ATOM_MODULE_DEP IN ITEMS
+        Marshland::ThirdPartyNlohmannJson
+        Marshland::ThirdPartyJsonSchemaValidator
+        Marshland::ConfigSchemaEmbed)
+    if(NOT TARGET ${ATOM_MODULE_DEP})
+        message(FATAL_ERROR
+            "atom_15_config_persistence: 缺少依赖目标 ${ATOM_MODULE_DEP}。"
+            "前两者由 ThirdParty/CMakeLists.txt 提供，"
+            "ConfigSchemaEmbed 由上层 CMakeLists.txt 的 Schema 嵌入段提供。")
+    endif()
+    if(ATOM_MODULE_SOURCES)
+        target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE ${ATOM_MODULE_DEP})
+    else()
+        target_link_libraries(${ATOM_MODULE_TARGET} INTERFACE ${ATOM_MODULE_DEP})
+    endif()
+endforeach()

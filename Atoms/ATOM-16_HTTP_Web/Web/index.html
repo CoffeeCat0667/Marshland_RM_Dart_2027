@@ -7,19 +7,24 @@
   <link rel="stylesheet" href="assets/css/style.css">
 </head>
 <body>
-  <div class="scanline" aria-hidden="true"></div>
 
   <header class="topbar">
     <div class="brand">
-      <div class="brand-mark"></div>
+      <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="3" y="3" width="34" height="34" rx="7" class="mk-frame"/>
+        <rect x="12" y="12" width="16" height="16" rx="3" class="mk-core"/>
+      </svg>
       <div class="brand-text">
         <h1>MARSHLAND</h1>
         <span>DART CONTROL · ATOM-16</span>
       </div>
     </div>
-    <div class="conn">
-      <span class="conn-dot" id="connDot"></span>
-      <span id="connText">未连接</span>
+    <div class="top-right">
+      <div class="clock" id="clock">--:--:--</div>
+      <div class="conn">
+        <span class="conn-dot" id="connDot"></span>
+        <span id="connText">未连接</span>
+      </div>
     </div>
   </header>
 
@@ -27,7 +32,7 @@
 
     <!-- 系统状态 -->
     <section class="card span-2">
-      <div class="card-title"><span class="bar"></span>系统状态</div>
+      <div class="card-title">系统状态<em>SYSTEM</em></div>
       <div class="stat-grid">
         <div class="stat">
           <label>系统模式</label>
@@ -50,25 +55,80 @@
 
     <!-- 自动流程 -->
     <section class="card span-2">
-      <div class="card-title"><span class="bar"></span>自动流程</div>
-      <div class="autofire">
-        <div class="af-state">
-          <label>流程阶段</label>
-          <div class="stat-value accent" id="afState">IDLE</div>
-        </div>
-        <div class="shots" id="shots">
-          <div class="shot" data-i="1"><i></i><span>1</span></div>
-          <div class="shot" data-i="2"><i></i><span>2</span></div>
-          <div class="shot" data-i="3"><i></i><span>3</span></div>
-          <div class="shot" data-i="4"><i></i><span>4</span></div>
-        </div>
-        <div class="af-track"><div class="af-fill" id="afFill"></div></div>
+      <div class="card-title">自动流程<em>AUTO FIRE</em></div>
+      <div class="af-state-row">
+        <label>流程阶段</label>
+        <div class="stat-value accent" id="afState">IDLE</div>
       </div>
+      <div class="shots" id="shots">
+        <div class="shot" data-i="1"><i></i><span>SHOT 1</span></div>
+        <div class="shot" data-i="2"><i></i><span>SHOT 2</span></div>
+        <div class="shot" data-i="3"><i></i><span>SHOT 3</span></div>
+        <div class="shot" data-i="4"><i></i><span>SHOT 4</span></div>
+      </div>
+      <div class="af-track"><div class="af-fill" id="afFill"></div></div>
+    </section>
+
+    <!-- 摇杆速度控制（仅纵向） -->
+    <section class="card span-4">
+      <div class="card-title">摇杆速度控制<em>STICK · LINEAR MAP</em><span class="badge">仅纵向 · 松手自动回中</span></div>
+      <div class="joy-grid">
+
+        <div class="joy-unit">
+          <div class="joy-head"><span>蓄力</span><em>CHARGE</em></div>
+          <div class="joy" data-max="5000" data-unit="rpm" data-name="蓄力">
+            <div class="joy-track-line"></div>
+            <div class="joy-tick t1"></div>
+            <div class="joy-tick t2"></div>
+            <div class="joy-knob"></div>
+          </div>
+          <div class="joy-readout"><b id="valCharge">0</b><i>rpm</i></div>
+          <div class="joy-meter"><div class="fill" id="meterCharge"></div></div>
+        </div>
+
+        <div class="joy-unit">
+          <div class="joy-head"><span>变力</span><em>FORCE</em></div>
+          <div class="joy" data-max="5000" data-unit="rpm" data-name="变力">
+            <div class="joy-track-line"></div>
+            <div class="joy-tick t1"></div>
+            <div class="joy-tick t2"></div>
+            <div class="joy-knob"></div>
+          </div>
+          <div class="joy-readout"><b id="valForce">0</b><i>rpm</i></div>
+          <div class="joy-meter"><div class="fill" id="meterForce"></div></div>
+        </div>
+
+        <div class="joy-unit">
+          <div class="joy-head"><span>YAW</span><em>纵向</em></div>
+          <div class="joy" data-max="5000" data-unit="rpm" data-name="YAW">
+            <div class="joy-track-line"></div>
+            <div class="joy-tick t1"></div>
+            <div class="joy-tick t2"></div>
+            <div class="joy-knob"></div>
+          </div>
+          <div class="joy-readout"><b id="valYaw">0</b><i>rpm</i></div>
+          <div class="joy-meter"><div class="fill" id="meterYaw"></div></div>
+        </div>
+
+        <div class="joy-unit">
+          <div class="joy-head"><span>换弹</span><em>RELOAD</em></div>
+          <div class="joy" data-max="5000" data-unit="rpm" data-name="换弹">
+            <div class="joy-track-line"></div>
+            <div class="joy-tick t1"></div>
+            <div class="joy-tick t2"></div>
+            <div class="joy-knob"></div>
+          </div>
+          <div class="joy-readout"><b id="valReload">0</b><i>rpm</i></div>
+          <div class="joy-meter"><div class="fill" id="meterReload"></div></div>
+        </div>
+
+      </div>
+      <p class="joy-note">摇杆纵向偏移量 → 速度值为<b>线性映射</b>：value = offset / radius × max；满偏 = ±5000 rpm。当前为演示模式，未接入真实控制接口。</p>
     </section>
 
     <!-- 机构状态 -->
     <section class="card">
-      <div class="card-title"><span class="bar"></span>机构状态</div>
+      <div class="card-title">机构状态<em>MECH</em></div>
       <ul class="mech-list">
         <li><span>蓄力</span><em class="pill ok">就绪</em></li>
         <li><span>变力</span><em class="pill ok">0 rpm</em></li>
@@ -80,7 +140,7 @@
 
     <!-- 链路状态 -->
     <section class="card">
-      <div class="card-title"><span class="bar"></span>链路状态</div>
+      <div class="card-title">链路状态<em>LINK</em></div>
       <ul class="mech-list">
         <li><span>CAN 总线</span><em class="pill ok">在线</em></li>
         <li><span>SBUS</span><em class="pill err">失联</em></li>
@@ -92,7 +152,7 @@
 
     <!-- 手动控制 -->
     <section class="card span-2">
-      <div class="card-title"><span class="bar"></span>手动控制<span class="badge">仅手动/调试模式</span></div>
+      <div class="card-title">手动控制<em>MANUAL</em><span class="badge">仅手动/调试模式</span></div>
       <div class="btn-grid">
         <button class="ctl">蓄力启动</button>
         <button class="ctl">蓄力停止</button>
@@ -106,15 +166,17 @@
     </section>
 
     <!-- 急停 -->
-    <section class="card span-2 estop-card">
-      <div class="card-title"><span class="bar"></span>软件急停</div>
+    <section class="card span-4 estop-card">
       <div class="estop-row">
         <button class="estop" id="estopBtn">
           <span class="ring"></span>
           <span class="ring r2"></span>
           <span class="estop-label">ESTOP</span>
         </button>
-        <p class="estop-note">触发后锁存全部执行器<br>解除须经人工确认（confirm=true）</p>
+        <div class="estop-text">
+          <h2>软件急停</h2>
+          <p>触发后立即锁存全部执行器、拒绝一切发射舵机指令。<br>解除须经人工确认（confirm = true），不自动恢复。</p>
+        </div>
       </div>
     </section>
 
