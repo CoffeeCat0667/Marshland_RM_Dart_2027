@@ -1,5 +1,6 @@
 #include "atom07_servo_driver/servo_core.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <system_error>
 
@@ -46,6 +47,20 @@ bool ServoCore::start(const ServoConfig& config) noexcept
         }
     }
     forgetFault();
+
+    // 装配层无需解析配置：设备路径/地址/超时由内核在此按配置打开总线。
+    if (!bus_.isOpen()) {
+        const I2cStatus opened = bus_.open(config_.i2c_device.c_str(),
+                                           static_cast<std::uint8_t>(config_.device_address),
+                                           config_.iic_comm_timeout_ms);
+        if (!opened.ok) {
+            const ServoFaultKind kind = (opened.system_error == ETIMEDOUT)
+                                            ? ServoFaultKind::Timeout
+                                            : ServoFaultKind::InitFailed;
+            recordFault(kind, 0, -1, opened.system_error);
+            return false;
+        }
+    }
 
     device_.emplace(bus_, static_cast<std::uint8_t>(config_.device_address));
     if (!device_->initialize(config_.pwm_frequency_hz, config_.pwm_resolution_bits)) {

@@ -5,7 +5,10 @@
 # 否则会与 AppCoordinator 形成依赖环。
 #   允许：MarshlandTypes.hpp、ILifecycle.hpp、StateArbitrationTypes.hpp、
 #         IMonotonicClock.hpp、AppInterfaces.hpp、IConfigView.hpp、
-#         SbusTypes.hpp、SbusInterfaces.hpp、CanTypes.hpp、CanInterfaces.hpp
+#         SbusTypes.hpp、SbusInterfaces.hpp、CanTypes.hpp、CanInterfaces.hpp、
+#         ForceTypes.hpp、ForceInterfaces.hpp、
+#         DiagnosticsTypes.hpp、ILogSink.hpp、IFaultRegistry.hpp、
+#         IDiagnosticsSnapshot.hpp
 #   禁止：任何 AppCoordinator 相关源码（见 Atoms/Public/AppCoordinator/）
 #
 # 为什么单独成一个子目录（而不是留在 Atoms/Public/CMakeLists.txt 里）：
@@ -37,4 +40,10 @@ target_sources(marshland_public_headers INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/../SbusTypes.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../SbusInterfaces.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../CanTypes.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../CanInterfaces.hpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../CanInterfaces.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../ForceTypes.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../ForceInterfaces.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../DiagnosticsTypes.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../ILogSink.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../IFaultRegistry.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../IDiagnosticsSnapshot.hpp")

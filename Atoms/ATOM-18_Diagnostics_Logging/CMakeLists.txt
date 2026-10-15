@@ -54,3 +54,16 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
+
+# 公共契约头：按上层约定在目标存在时链接 Marshland::PublicHeaders
+if(TARGET Marshland::PublicHeaders)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::PublicHeaders)
+endif()
+
+# nlohmann/json 仅实现侧使用；仅 STATIC（有 Src/ 源码）时 PRIVATE 链接，
+# 避免第三方头经 INTERFACE 泄漏到对外接口
+if(ATOM_MODULE_SOURCES AND TARGET Marshland::ThirdPartyNlohmannJson)
+    target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE
+        Marshland::ThirdPartyNlohmannJson)
+endif()

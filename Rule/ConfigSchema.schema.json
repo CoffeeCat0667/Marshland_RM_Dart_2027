@@ -265,7 +265,7 @@
       "type": "object",
       "additionalProperties": false,
       "description": "变力机构（Design/Config.md §5.6）",
-      "required": ["center_deadband_rpm", "center_action"],
+      "required": ["center_deadband_rpm", "center_action", "control_mode", "target_default_source", "target_unit", "target_range", "completion_criterion", "calibration_method", "has_dedicated_fault_handling"],
       "properties": {
         "center_deadband_rpm": {
           "type": "integer",
@@ -462,6 +462,16 @@
                 "properties": {
                   "name": { "const": "manual_charge_right" },
                   "channel": { "const": "CH9" }
+                }
+              }
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": ["name", "channel"],
+                "properties": {
+                  "name": { "const": "manual_force" },
+                  "channel": { "const": "CH12" }
                 }
               }
             }

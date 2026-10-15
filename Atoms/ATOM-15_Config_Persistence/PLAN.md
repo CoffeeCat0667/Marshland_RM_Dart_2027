@@ -225,6 +225,7 @@ const auto result = store.updateRuntime(
 | 0.8 | 2026-10-14 | 落实蓄力 P1/P2/P3、可选目标范围、完整 ATOM-07 舵机/IIC/线程配置，以及变力 Q-13 中位死区与零力矩处置；P4 左右配置键仍待用户选定。 |
 | 0.9 | 2026-10-14 | 将 `force` 和 `thread` 加入必需配置结构；完成 Q-13 校验、标量数组查询修复，并通过初始配置与集成样例 Schema 静态校验及 ARM 增量编译。 |
 | 1.0 | 2026-10-15 | JSON 解析/序列化切换为 nlohmann/json 3.12.0；配置校验切换为编译期嵌入的 ConfigSchema（pboettch json-schema-validator 2.4.0）+ 薄语义层；修复 getStringAt 标量字符串数组读取；同步测试样例。 |
+| 1.1 | 2026-10-15 | 应 ATOM-09：`force` 域 9 键全部写入 `dart_control.json` 并纳入 Schema `required`；`sbus.functions` 新增 `manual_force→CH12` 并加入 Schema `contains` 强制映射；测试样例同步。ATOM-15 代码零改动（Schema 化改造的直通收益）。 |
 
 ## 11. JSON 库与 Schema 校验化改造（2026-10-15）
 
@@ -236,6 +237,7 @@ const auto result = store.updateRuntime(
 - `load()` 与 `updateRuntime/writePid/writeReserved` 共用同一两段式 `validate()`；热更新现在受完整 Schema 约束（const/枚举/范围均生效）。
 - 以 Schema 为准后删除的旧规则：`isKnownRootKey` 白名单、`frame_bytes==25`、timing 额外必需键、摇杆 0–2047、`estop_other_servos` 仅 HOLD。`sbus.frame_bytes` 的 25 字节约束自此完全由 ATOM-03 消费侧承担。
 - `getStringAt(..., "", ...)` 现支持标量字符串数组元素直读（与 `getIntAt` 行为对齐）。
+- 标量数组读取约定确认（答复 ATOM-07）：`getIntAt/getDoubleAt/getBoolAt/getStringAt` 的 `element_key` 传 `""` 或 `nullptr` 均直接读取数组元素本身；仅非空字段名按对象成员查找。`IConfigView` 公共注释未规定该约定，以本实现为准。
 
 ### 11.2 验证边界
 

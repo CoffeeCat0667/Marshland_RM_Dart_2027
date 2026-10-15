@@ -1,7 +1,7 @@
 # ATOM-09_Force Coding Plan
 
-> 状态：**计划已冻结，代码尚未实施**（`Inc/`、`Src/` 不存在；本文件不含已实施声明）。
-> 版本：0.4
+> 状态：**内部代码已实施（未编译）**：公共契约 2 个 + 模块 `Inc/` 3 个 + `Src/` 2 个；装配接线（B 部分）与兄弟 ATOM（C 部分）仍待外部。
+> 版本：0.5
 > 更新日期：2026-10-14
 > 同步基线：PRD 0.10、PEF 1.5、Interface 1.8、Config 1.3；`Rule/AtomIntegration.md` 1.3、`Rule/ConfigSchema.md` 1.7
 > 裁决状态：`Q-01`～`Q-26` **已全部裁决**（见 §8），可进入 Coding。
@@ -110,6 +110,20 @@ Entry.cpp / AppCoordinator（装配层）
 
 **不新增**：ATOM-09 自身的依赖端口（`IMotorCommandSink`、`IForceFaultSink`）放在本模块 `Inc/atom09_force/force_interfaces.hpp`，由装配层适配 ATOM-04/05/14；这样 ATOM-05/14 无需包含 ATOM-09 的头。
 
+**已实施签名（2026-10-14）**：
+
+```cpp
+class IMotorCommandSink {
+    bool submitVelocityTarget(int motor_id, std::int32_t rpm);
+    bool stopMotor(int motor_id);                 // 撤销目标并走零力矩锁存
+    bool readFeedback(int motor_id, marshland::force::ForceMotorFeedback& out);
+    bool faultLatched(int motor_id);
+};
+class IForceFaultSink {
+    void onForceActionFailed(const char* detail);  // 不含故障码（Q-17）
+};
+```
+
 ## 4. 配置接入（Q-08）
 
 一律经注入的 `config::IConfigView`，按 `Rule/ConfigSchema.md` 键名查询，逐项检查 `ConfigStatus`；**禁止**臆造默认值、**禁止**自解析 JSON、**禁止**消费 `[待定]`/未列出键。
@@ -177,7 +191,7 @@ Entry.cpp / AppCoordinator（装配层）
 
 1. 只接受映射电机反馈，其他电机反馈不得覆盖。
 2. 无效反馈不刷新有效时间、不伪造转速。
-3. `IMotorCommandSink::faultLatched(id)` 为真 → 状态 `FAULT`，经 `IForceFaultSink` 上报**"变力动作失败"事实**；电机/PID/编码器/CAN 的原始故障码由 ATOM-05/04 各自上报 ATOM-14，**本模块不重复登记**（避免同一故障双报）。
+3. `IMotorCommandSink::faultLatched(id)` 为真 → 状态 `FAULT`，经 `IForceFaultSink::onForceActionFailed(detail)` 上报**"变力动作失败"事实**（**不携带故障码**）；电机/PID/编码器/CAN 的原始故障码由 ATOM-05/04 各自上报 ATOM-14，**本模块不重复登记**（避免同一故障双报）。`ForceStatus::error_code` 是本地诊断标识，不是 Config §14.2 故障码。
 4. 本模块**不清除**故障、不自动重试。
 
 ### 5.7 查询（Q-11）
@@ -195,13 +209,14 @@ Atoms/Public/
 
 Atoms/ATOM-09_Force/
 ├── Inc/atom09_force/
-│   ├── force_types.hpp             # 模块内部补充类型（若公共类型已足够则只做别名）
 │   ├── force_config.hpp            # IConfigView -> ForceConfig（含 role 解析）
 │   ├── force_interfaces.hpp        # IMotorCommandSink / IForceFaultSink（私有窄接口）
 │   └── force_controller.hpp        # 内核（无线程、无 I/O、无设备）
 └── Src/
     ├── force_config.cpp
     └── force_controller.cpp
+
+> 无需模块私有 `force_types.hpp`：`Atoms/Public/ForceTypes.hpp` 已覆盖全部对外类型。
 ```
 
 命名空间 `marshland::atom09`；包含进入方式 `atom09_force/xxx.hpp`；**不创建** `lifecycle_adapter`。
@@ -268,6 +283,8 @@ Atoms/ATOM-09_Force/
 
 ## 9. 实施顺序
 
+> **实施状态（2026-10-14）**：第 1～5 步**已完成**（代码已写入，未编译）；第 6 步静态自检已完成；第 7 步（aarch64 增量编译）待用户在 WSL/目标机执行（Q-20）。
+
 1. 落地 `Atoms/Public/ForceTypes.hpp`、`ForceInterfaces.hpp`，登记进 Public CMake。
 2. 冻结核内私有接口与类型（`force_interfaces.hpp`、`force_types.hpp`）。
 3. 实现 `force_config.cpp`（含 `role=="force"` 解析、2 个新键、`ConfigStatus` 检查）。
@@ -291,3 +308,4 @@ Atoms/ATOM-09_Force/
 | 0.2 | 2026-10-14 | 重写：修正变力电机为 6/`0x206` 并按 `role` 解析；确立纯逻辑内核不注册生命周期；改为 `IConfigView` + 窄接口注入；给出配置键、验收判定表、CMake 缺口与 11 项登记 |
 | 0.3 | 2026-10-14 | 统一 CH12 为变力专用映射；`force.target_default_source = SBUS_CH12`；同步 `Config.md` 1.3、`Interface.md` 1.7、`ConfigSchema.md` 1.6 与 schema |
 | 0.4 | 2026-10-14 | **裁决落地**：`Q-01`～`Q-26` 全部裁决并登记；确定控制权→数据来源选择、`ForceTypes/ForceInterfaces` 公共契约清单、`force.center_deadband_rpm`/`force.center_action` 新增键申请、双模式语义、CH12 中位零力矩、删除超时分支；更正 `Interface.md` 1.8（§10.1 电机映射）与 `ConfigSchema.md` 1.7（§2.7.1 双 M3508、章节号）。**仍仅修改文档，未实施代码、未编译。** |
+| 0.5 | 2026-10-14 | **内部代码实施**：新增 `Atoms/Public/ForceTypes.hpp`、`ForceInterfaces.hpp` 并登记进 `Public/Headers/CMakeLists.txt`；新增 `Inc/atom09_force/{force_config,force_interfaces,force_controller}.hpp` 与 `Src/{force_config,force_controller}.cpp`；本模块 CMake 补 `Marshland::PublicHeaders` 链接（Q-02）；`IForceFaultSink` 定为 `onForceActionFailed(detail)`（无故障码，Q-17）。配置复查：`force` 9 键齐备、`manual_force→CH12` 已入表。**未编译**（Q-20）。 |

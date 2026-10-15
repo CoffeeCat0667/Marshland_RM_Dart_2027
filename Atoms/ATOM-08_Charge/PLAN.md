@@ -1,13 +1,13 @@
 # ATOM-08_Charge 实现方案（PLAN）
 
-> 版本：2.2
+> 版本：2.5
 > 更新日期：2026-10-14
 > 设计基线：`Design/Atomic/ATOM-08_Charge.md`（同步基线 PRD 0.10 / PEF 1.5 / Interface 1.5 / Config 0.8）
 > 接入规范：`Rule/AtomIntegration.md` v1.4（本轮已按授权做一次现实同步）
 > 键名规范：`Rule/ConfigSchema.md` v1.4；机器可读契约 `Rule/ConfigSchema.schema.json`
 > 接入样例基线：`Atoms/ATOM-03_SBUS`
-> 当前实现状态：本目录只有 `AGENTS.md`、`PLAN.md`、`CMakeLists.txt`；`Inc/`、`Src/` 与实现代码**尚未创建**（等待 §4.2 配置项落地后开工）。
-> 本轮已获授权的改动：`PLAN.md`（本文）、`CMakeLists.txt`（补齐 `Marshland::PublicHeaders` 链接块）、`Rule/AtomIntegration.md`（现实同步 v1.4）。**未创建或修改任何实现代码。**
+> 当前实现状态：**已实现**（`Inc/atom08_charge/` 5 个头 + `Src/` 3 个源），ARM 增量编译与 `-Wall -Wextra -Wpedantic` 严格检查均通过（见 §13）；装配层接入与 ATOM-06 联调待顶层装配方。
+> 本轮已获授权的改动：`PLAN.md`（本文）、`CMakeLists.txt`（补齐 `Marshland::PublicHeaders` 链接块）、`Rule/AtomIntegration.md`（现实同步 v1.4），以及经用户"直接完整实现"授权的 `Inc/atom08_charge/`（5 个头）与 `Src/`（3 个源）。
 
 ---
 
@@ -32,7 +32,7 @@
 | 5 | 接受普通停止蓄力请求并停止两个电机的普通蓄力目标 | `requestStopCharge()` |
 | 6 | 向电机 1 提交回零目标 | `requestHome()` |
 | 7 | 向电机 2 提交回零目标 | 同上 |
-| 8 | 读取两个限位开关的稳定状态 | `ILimitSwitchState`（装配层注入 ATOM-06） |
+| 8 | 读取两个限位开关的稳定状态 | 窄端口 `ILimitSwitchState`（装配层注入 ATOM-06 的"双限位是否同时有效且稳定为低"查询）；**本模块不读取 `gpio.*` 配置**（选项 A，见 §4.1） |
 | 9 | 仅当双限位均低电平时停止回零并标记回零完成 | `tick()` 回零判定 |
 | 10 | 查询蓄力状态、目标、完成状态或最近错误 | 只读快照接口 |
 | 11 | 将蓄力超时、电机或限位错误报告给 ATOM-14 | `IFaultReporter` 窄端口 |
@@ -180,21 +180,26 @@ private:
 
 ## 4. 配置接入
 
-### 4.1 复用现有键（本轮不改）
+### 4.1 本模块读取的配置键
 
 | 查询键 | 类型/单位 | 本模块用途 |
 |---|---|---|
 | `timing.charge_time_s` | int / s（30） | 正常蓄力完成判据 X |
-| `timing.charge_max_action_ms` | int / ms（**现值 30，需改为 30000**，见 §4.2-P1） | 蓄力最大动作时间；完成判定优先于超时 |
-| `timing.charge_home_max_action_ms` | int / ms（**待新增 = 25000**，见 §4.2-P2） | 回零最大动作时间（R3） |
+| `timing.charge_max_action_ms` | int / ms（30000） | 蓄力最大动作时间；完成判定优先于超时 |
+| `timing.charge_home_max_action_ms` | int / ms（25000） | 回零最大动作时间（R3） |
 | `charge.charge_speed_rpm` | int / rpm（5000） | 正常蓄力恒定速度（含方向符号） |
 | `charge.home_speed_rpm` | int / rpm（5000） | 回零速度（含方向符号） |
-| `gpio.charge_home_criterion` | str（`BOTH_LIMITS_LOW`） | 回零判据一致性校验 |
-| `gpio.active_level` / `gpio.default_level` | str（`LOW` / `HIGH`） | 限位有效/默认电平校验（实现落在 ATOM-06） |
-| `gpio.limit_switch[].id` / `.motor_id` | int | 限位 1、2 与电机 1、2 的关联 |
-| `gpio.limit_switch[].pin` | int \| null | **已裁决：暂不接入，保持 `null`**；禁止推断 |
-| `motor[]`（`id`/`role`/`bus`/`node`/`target_unit`） | — | 校验 1=`charge_right`/0x201、2=`charge_left`/0x202，单位 rpm |
-| `baseline.repeat_charge_per_shot` | bool | 每发重复蓄力（消费方 ATOM-13） |
+| `charge.target_range` | int / rpm（15000，对称 ±） | 目标越界拒绝依据（`W-CMD-001`） |
+| `motor[]`（`id`/`role`） | int / str | 按 `role` 解析 `charge_left` / `charge_right` 的电机 ID；**禁止硬编码电机 ID** |
+| `sbus.functions[]`（`name`/`channel`） | str | 解析 `manual_charge`（整体）/ `manual_charge_left` / `manual_charge_right` 的通道下标；`channel` 为 null 或不匹配视为未映射；**禁止硬编码 CH 编号** |
+
+**不属于本模块读取的键（选项 A 裁决，2026-10-14）**
+
+| 键 | 归属 | 说明 |
+|---|---|---|
+| `gpio.*`（`charge_home_criterion`、`limit_switch[]`、`active_level`、`default_level`、`debounce_ms`、`sample_period_ms`、`read_failure_handling`、`limit_trigger_action`、`report_on_change`、`report_max_delay_ms`） | **ATOM-06** | 限位采样、去抖、有效电平与"双限位均低"判据由 ATOM-06 负责；ATOM-08 只调用窄端口 `ILimitSwitchState`，**不读这些键**，也不因它们缺失而失败 |
+
+> 该裁决意味着 `gpio` 段缺失（见 `Atoms/Public/GeneralBugs/2026-10-14-ATOM-08.md` BUG-20261014-02）**不阻塞 ATOM-08**，只影响 ATOM-06 自身的实现与联调。
 
 ### 4.2 配置落地核对与待补项（2026-10-14 核对 `Config/dart_control.json`）
 
@@ -205,10 +210,10 @@ private:
 | `charge.charge_speed_rpm` | 5000 | 已落地（`Design/Config.md` §5.5、`ConfigSchema.md` §2.5、`schema.json` 的 `charge`） |
 | `charge.home_speed_rpm` | 5000 | 已落地 |
 | `timing.charge_time_s` | 30 | 已落地 |
-| `gpio.charge_home_criterion` | `BOTH_LIMITS_LOW` | 已落地；**R4 合并结论：回零判据只读本键，不新增 `charge.home_completion_criterion`** |
-| `gpio.limit_switch[].pin` | `null` | 已裁决暂不接入 |
+| `charge.target_range` | 15000 | 已落地（对称 ±） |
+| `gpio.*`（10 键） | **config 缺失** | **归 ATOM-06；本模块不读取（选项 A）**，不阻塞 ATOM-08 |
 
-**待补项（阻塞开工）**
+**曾列待补项（2026-10-14 已全部闭环，保留记录）**
 
 | # | 问题 | 需要配置维护方做的动作 |
 |---|---|---|
@@ -221,6 +226,18 @@ private:
 
 - `charge.target_range`（对称 ±，int / rpm）：若需按 `W-CMD-001` 拒绝越界目标则补此键；不加则本模块只做类型、有限性与 int 可表示性校验，**不臆造范围**。
 - `charge.control_mode` / `charge.target_unit` / `charge.completion_criterion` / `charge.has_dedicated_fault_handling`：与 `force.*` 对齐的元数据，非必需；本模块不读取未登记的键。
+
+**核对结论（2026-10-14，读 `Config/dart_control.json` + `Rule/ConfigSchema.schema.json`）**
+
+- ✅ P1 `timing.charge_max_action_ms = 30000`
+- ✅ P2 `timing.charge_home_max_action_ms = 25000`（config 与 schema 均已登记）
+- ✅ P3 `manual_charge_left → CH8`、`manual_charge_right → CH9` 已加入配置，且已登记进 `functions[].name` 枚举；未发现任何配置键超出 schema 声明
+- ✅ P4 采用**选项 (a)**：`charge` 段只有 `charge_speed_rpm` / `home_speed_rpm`，左右独立性由 SBUS CH8/CH9 与 WEB/ATOM-13 下发目标体现
+- ✅ 另加可选键 `charge.target_range = 15000`（对称 ±，schema 默认值同值）
+- ✅ `reserved_001` 由 schema 的 `patternProperties ^reserved_[0-9]{3}$` 覆盖，非未登记键
+- ⚠️ **`gpio` 段整体缺失**（10 键）：schema 未把 `gpio` 列入 `required`，校验通过但运行期查询返回 `MISSING`。**按选项 A 裁决，此缺口归 ATOM-06，不阻塞 ATOM-08**——ATOM-08 不读 `gpio.*`，回零判据由 ATOM-06 的窄端口给出。已登记为 `GeneralBugs/2026-10-14-ATOM-08.md` BUG-20261014-02；用户已决定本阶段不补该段。
+- ⚠️ `sbus.rules[]` 缺失（`ConfigSchema.md` §2.8.2 要求入 JSON）：非本模块直接消费，但 §3.5 第 1 步的"控制权归属判定"依赖它，属 ATOM-02 的配置缺口。
+- （非本模块）`fault` 段亦缺失（`fault.table` / `fault.rules`），影响 ATOM-14/18。
 ### 4.3 使用纪律
 
 1. 只经 `Atoms/Public/IConfigView.hpp` 查询，禁止自解析 JSON；
@@ -231,25 +248,26 @@ private:
 
 ---
 
-## 5. 代码结构（配置项落地后实施）
+## 5. 代码结构（已实现，2026-10-14）
 
 ```text
 ATOM-08_Charge/
-├── CMakeLists.txt                    # 已完成（含 PublicHeaders 链接块）
+├── CMakeLists.txt                      # STATIC 目标 atom_08_charge + Marshland::atom_08_charge；链接 Marshland::PublicHeaders
 ├── PLAN.md
 ├── Inc/atom08_charge/
-│   ├── charge_types.hpp              # 状态/命令/目标/完成/错误类型
-│   ├── charge_interfaces.hpp         # IMotorCommandSink / ILimitSwitchState / IFaultReporter / 速度来源端口
-│   ├── charge_config.hpp             # ChargeConfig + LoadChargeConfig(IConfigView&)
-│   ├── charge_controller.hpp         # 纯逻辑内核
-│   └── lifecycle_adapter.hpp         # ATOM 内注册接口（唯一 ILifecycleModule 实现，见 §3.6）
+│   ├── charge_types.hpp                # 状态/动作/目标来源/请求结果/故障类别/请求/只读快照
+│   ├── charge_interfaces.hpp           # IMotorCommandSink / ILimitSwitchState / IFaultReporter
+│   ├── charge_config.hpp               # ChargeConfig + LoadChargeConfig(IConfigView&)
+│   ├── charge_controller.hpp           # 纯逻辑内核 ChargeController（configure/reset/request*/tick/status）
+│   └── lifecycle_adapter.hpp           # ATOM 内注册接口（唯一 ILifecycleModule 实现，见 §3.6）
 └── Src/
-    ├── charge_config.cpp
-    ├── charge_controller.cpp
-    └── lifecycle_adapter.cpp         # 初始化编排与结果翻译，≤ 50 行
+    ├── charge_config.cpp               # 配置读取与校验（含 motor[]、sbus.functions[] 解析）
+    ├── charge_controller.cpp           # 校验 → 仲裁 → 提交 → 计时 → 限位判定 → 故障上报
+    └── lifecycle_adapter.cpp           # 初始化编排与结果翻译（31 行）
 ```
 
 - 命名空间 `marshland::atom08`；头文件只在 `Inc/atom08_charge/`；内核只依赖 `Atoms/Public/` 与标准库。
+- 窄接口语义：`IMotorCommandSink`（装配层适配 ATOM-05 的速度目标提交/撤销）、`ILimitSwitchState::readChargeLimit(motor_id, sample)`（装配层适配 ATOM-06，本模块不读 `gpio.*`）、`IFaultReporter::reportChargeFault(code, severity)`（装配层委托 `IInputReporter::ReportFault`）。
 
 ---
 
@@ -384,6 +402,7 @@ ATOM-08_Charge/
 - [ ] `LifecycleAdapter` 为唯一 `ILifecycleModule` 实现，独立 TU、≤ 50 行、无业务逻辑、`shutdown()` noexcept 且幂等
 - [ ] `initialize()` 失败时如实返回 `success = false`，`error_message` 可定位
 - [ ] 配置经 `IConfigView` 按 `Rule/ConfigSchema.md` 键名读取，检查了 `ConfigStatus`
+- [ ] **未读取 `gpio.*`**：回零判据与限位状态全部来自注入的 `ILimitSwitchState`（选项 A）
 - [ ] 未自解析 JSON；缺失项如实失败；`[待定]` 项保持未实现；无臆造默认值
 - [ ] 未调用 `StateArbitrator` 任何 setter / `UpdateInputs()`；未注入具体 `AppCoordinator&`/`StateArbitrator&`
 - [ ] 安全动作按类别提交：普通蓄力 `CONTROL`、回零 `SAFETY_RECOVERY`、零力矩 `SAFETY`
@@ -397,18 +416,64 @@ ATOM-08_Charge/
 
 ---
 
-## 13. 本轮修改范围
+## 13. 实现与验证结果（2026-10-14）
+
+| 项 | 结果 |
+|---|---|
+| 增量 ARM 交叉编译 | ✅ `cmake --build cmake-build-ubuntu-arm --target atom_08_charge`：3 个 `.cpp` 编译并归档为 `libatom_08_charge.a`（未全量 configure、未 clean） |
+| 整体链接 | ✅ `--target marshland` 增量构建通过，`atom_08_charge` 参与构建，可执行文件链接成功 |
+| 严格警告 | ✅ `aarch64-linux-gnu-g++ -std=c++23 -Wall -Wextra -Wpedantic -fsyntax-only` 单独编译 3 个 `.cpp`：**零警告** |
+| 静态自检 | ✅ 无 `main()`、无 `AppCoordinator.hpp`/`SystemMonotonicClock.hpp`、无跨 ATOM 私有头、无 `gpio.*` 读取、无硬编码 CH 编号/电机 ID、无 JSON 解析 |
+| 适配器规模 | ✅ `lifecycle_adapter.cpp` 独立翻译单元、31 行、无业务逻辑、`shutdown()` noexcept 且幂等 |
+| 安全门控 | ✅ 普通蓄力/停止 = `CONTROL`、回零 = `SAFETY_RECOVERY`；`SystemMode == SOFTWARE_ESTOP` 或 `FAULT` 时自身拒绝并撤销出力；`accepted == false` 一律不当作成功 |
+| 死锁防护 | ✅ `IStateReader::ReadState()` 的状态租约取快照后立即销毁，之后才调用 `SubmitIntent`/电机/限位端口 |
+
+**自审后修复（2026-10-14，仅本模块内部缺陷）**
+
+| 编号 | 缺陷 | 修法 |
+|---|---|---|
+| D-1 | `requester == NONE` 时"解析用控制源、提交用 NONE"不一致 → 必然被仲裁拒绝 | 引入 `effective_source`（requester 优先，NONE 回落当前控制源），解析与 `SubmitIntent` 使用同一值；`NONE` 直接返回 `RejectedNoControlAuthority` |
+| D-3 | `tick` 取了 `fault_active` 却不用 → 故障已激活但 mode 未转 FAULT 时不撤销出力 | 改为 `must_revoke = SOFTWARE_ESTOP ‖ FAULT ‖ (fault_active && mode != RECOVERY)`；恢复阶段不打断 ATOM-14 的蓄力回零 |
+| NB-1 | SBUS 三通道全 0 时"空转 X 秒后误报完成" | 解析结果为 (0, 0) 时返回 `RejectedTargetUnavailable`（蓄力与回零一致处理） |
+| NB-3 | `ChargeStatusSnapshot::action` 易被误读为"当前动作" | 重命名为 `last_action`，并在类型注释中说明"最近一次动作" |
+| NB-4 | `tick` 的调用周期未写明 | 头文件注明"期望由装配层按 20 ms 控制周期调用" |
+
+重新验证：ARM 增量编译通过（`libatom_08_charge.a` 重建，仅重编 2 个改动单元）；`-Wall -Wextra -Wpedantic` 严格编译**零警告**。
+
+**待外部裁决/接线（非本模块可修，已登记 `GeneralBugs/2026-10-14-ATOM-08.md`）**
+
+- **HB-1（致命）**：`tick()` 无调用方 → 蓄力只启动不收敛；装配层必须指定 20 ms 周期调用者。
+- HB-2：`clearVelocityTarget` 映射语义（0 rpm 保持 vs 零力矩）待裁决。
+- HB-3：`ConfigReloadFailed` / `LimitInputInvalid` 是否走故障通道待裁决。
+- HB-4：若注册生命周期适配器，步骤必须晚于 `LoadConfiguration` / `ValidateConfiguration`。
+- D-2：`F-LIMIT-001`（非回零期间限位冲突）的检测与"方向冲突"语义归 ATOM-06 / ATOM-14；本模块已在 D-3 修复后对"故障激活且非恢复阶段"撤销出力。
+
+**实现期新发现（已登记 `Atoms/Public/GeneralBugs/2026-10-14-ATOM-08.md`）**
+
+- `Design/Config.md` §14.2 故障表**没有**"蓄力超时/回零超时"条目，而 `ATOM-08_Charge.md` 要求把蓄力超时报告给 ATOM-14；本实现因此只上报自定义类别枚举 `ChargeFaultCode`，交装配层/ATOM-14 映射，未新增表外故障码。
+- 顶层 CMake 生成的编译命令**不含** `-Wall -Wextra -Wpedantic`（与 `Rule/AtomIntegration.md` §9.3 不符）；本轮以独立严格编译补验。
+
+**未完成/受限项**
+
+- ATOM-06 未实现：`ILimitSwitchState` 需装配层提供实现或测试替身才能联调。
+- 装配层（`Entry.cpp`）未接入：对象图、注册步骤与 `required` 由顶层装配方负责（§3.2、§3.6）。
+
+---
+
+## 14. 本轮修改范围
 
 | 文件 | 操作 |
 |---|---|
 | `Atoms/ATOM-08_Charge/PLAN.md` | 更新（本文） |
 | `Atoms/ATOM-08_Charge/CMakeLists.txt` | 补齐 `Marshland::PublicHeaders` 链接块（授权一次） |
 | `Rule/AtomIntegration.md` | 现实同步至 v1.4（授权一次） |
-| `Inc/`、`Src/`、其他 ATOM、`Design/`、`Atoms/Public/`、上层 CMake | **未创建、未修改** |
+| `Inc/atom08_charge/*.hpp`（5 个） | 新建（本轮实现） |
+| `Src/charge_config.cpp`、`Src/charge_controller.cpp`、`Src/lifecycle_adapter.cpp` | 新建（本轮实现） |
+| 其他 ATOM、`Design/`、`Atoms/Public/`（除 GeneralBugs 文档）、`Config/`、上层 CMake | **未修改** |
 
 ---
 
-## 14. 版本记录
+## 15. 版本记录
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
@@ -416,3 +481,6 @@ ATOM-08_Charge/
 | 2.0 | 2026-10-14 | 依据 `AtomIntegration.md` v1.3、`ConfigSchema.md` v1.4、`Design/Config.md` 1.1、`Design/Interface.md`、`Atoms/Public` 契约与 `ATOM-03_SBUS` 样例重写，并登记 8 项待确认/冲突。 |
 | 2.1 | 2026-10-14 | 落实用户 8 项裁决：新增 §3.5（先定控制权再按来源取速度）、§3.6（ATOM 内注册接口）、§4.2（配置项需求清单，提交配置维护方）、§11（裁决闭环与剩余 R1–R4）；`timing.charge_max_action_ms` 定为 30000 ms；限位暂不接入；CMake 补齐 `PublicHeaders`；`AtomIntegration.md` 同步 v1.4。**本轮未创建或修改任何实现代码。** |
 | 2.2 | 2026-10-14 | 核对已落地的 `charge` 配置并落实 R1～R4：§3.5 增列 CH2 优先覆盖 CH8/CH9 的读取规则与左右独立设计；§4.1 换为真实键与现值；§4.2 改为"配置落地核对与待补项"（P1 超时值 30→30000、P2 新增回零超时 25000、P3 sbus.functions 补 CH8/CH9 映射、P4 左右独立键二选一、target_range 可选）；§6.2 增补回零超时判据；§11.2 记录 R1～R4 裁决。**仍未创建或修改任何实现代码。** |
+| 2.4 | 2026-10-14 | 完成实现：新增 `Inc/atom08_charge/` 5 个头与 `Src/` 3 个源（领域类型、窄接口、配置读取、纯逻辑内核、ATOM 内注册适配器）；`sbus.functions[]` 通道映射改为配置驱动（§4.1）；新增 §13 实现与验证结果（ARM 增量编译、严格警告零警告、静态自检）；§5 记录实际文件结构。**代码已实现，未修改其他模块。** |
+| 2.5 | 2026-10-14 | 自审并修复本模块内部缺陷：D-1（effective_source 一致性）、D-3（故障激活即撤销出力，恢复阶段除外）、NB-1（全零目标不再误报完成）、NB-3（`last_action` 重命名）、NB-4（tick 周期注释）；§13 记录修复与重新验证结果、外部待裁决项（HB-1～HB-4、D-2）。**未修改其他模块。** |
+| 2.3 | 2026-10-14 | 按用户选项 A 定稿：§1.2/§4.1 明确 ATOM-08 **不读取 `gpio.*`**，限位与回零判据全部经窄端口 `ILimitSwitchState` 由 ATOM-06 提供；`gpio` 段缺失不再视为 ATOM-08 阻塞；§4.2 更新核对结论与已落地键表；§12 自检清单增设"未读取 `gpio.*`"项。**仍未创建或修改任何实现代码。** |

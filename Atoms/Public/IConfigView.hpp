@@ -98,6 +98,37 @@ public:
                                      const char* element_key, const char*& out_data,
                                      std::uint64_t& out_size) const noexcept = 0;
 
+    // ---- 嵌套数组（对象数组元素内的数组）---------------------------------
+    // 背景：websocket.message_types[].payload_fields 这类键是"对象数组的元素
+    // 内部再嵌套数组"，上面的 getArraySize/get*At 无法表达"第 index 个元素的
+    // element_key 数组成员"。
+    //
+    // 本组方法带默认实现：返回 MISSING 表示实现方尚不支持嵌套数组查询。
+    // 默认实现保证既有实现方（ATOM-15）无需立即修改即可继续编译运行；
+    // 支持嵌套数组的实现应覆盖（override）这两个方法。
+    //
+    // 消费方必须把 MISSING 按"配置未提供"显式处理，禁止回填猜测值；
+    // 其他非 OK 状态（INVALID_TYPE 等）仍是配置错误。
+    virtual ConfigStatus getNestedArraySize(const char* key, std::uint64_t index,
+                                            const char* element_key,
+                                            std::uint64_t& out_size) const noexcept
+    {
+        (void)key; (void)index; (void)element_key; (void)out_size;
+        return ConfigStatus::MISSING;
+    }
+
+    // 读取对象数组第 index 个元素内 element_key 数组的第 nested_index 个字符串成员。
+    virtual ConfigStatus getNestedStringAt(const char* key, std::uint64_t index,
+                                           const char* element_key,
+                                           std::uint64_t nested_index,
+                                           const char*& out_data,
+                                           std::uint64_t& out_size) const noexcept
+    {
+        (void)key; (void)index; (void)element_key; (void)nested_index;
+        (void)out_data; (void)out_size;
+        return ConfigStatus::MISSING;
+    }
+
     // ---- 版本与可用性 -----------------------------------------------------
     // 单调递增。每次成功的热加载都必须自增，消费方据此决定是否重新读取。
     virtual std::uint64_t configVersion() const noexcept = 0;

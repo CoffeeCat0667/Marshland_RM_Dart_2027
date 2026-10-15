@@ -54,3 +54,14 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
+
+# 模块依赖：Public 契约头；ATOM-07 舵机写入（用户裁决：直连，
+# 按 ServoMechanism::Fire 寻址）
+if(TARGET Marshland::PublicHeaders)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::PublicHeaders)
+endif()
+if(TARGET Marshland::atom_07_servo_driver)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::atom_07_servo_driver)
+endif()

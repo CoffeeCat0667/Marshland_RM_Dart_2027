@@ -26,6 +26,12 @@ public:
     II2cBus(const II2cBus&) = delete;
     II2cBus& operator=(const II2cBus&) = delete;
 
+    // 打开并绑定设备（设备路径、7 位地址、单次事务超时）。
+    // 参数由内核在 start() 时按配置传入（servo.pca9685.i2c_device / address 与
+    // timing.iic_comm_timeout_ms），装配层不需要解析配置，也不需预先打开设备。
+    virtual I2cStatus open(const char* device_path, std::uint8_t device_address,
+                           unsigned transaction_timeout_ms) noexcept = 0;
+
     // 写寄存器：先发送寄存器地址，再发送 size 字节数据。
     virtual I2cStatus write(std::uint8_t device_address, std::uint8_t reg,
                             const std::uint8_t* data, std::size_t size) noexcept = 0;

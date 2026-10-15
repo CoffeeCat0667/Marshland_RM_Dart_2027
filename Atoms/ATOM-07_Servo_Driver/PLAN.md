@@ -380,11 +380,11 @@ private:
 | 5 | **故障码归属**：`W-CMD-001` / `F-SERVO-001` 由谁记录（ATOM-18？）。ATOM-07 是否需注入诊断/日志端口 | 是否新增依赖 | 安全/诊断负责人 |
 | 6 | **线程模型**：`Config.md` §15 提到"IIC 任务优先级 中高；安全动作队列高于普通舵机队列"。ATOM-07 是"调用方在控制周期内同步调用"，还是需要独立 IIC 线程/队列（谁创建、注册到哪个 `RuntimeStep`） | 内核是否含线程 | 装配层 / ATOM-01 负责人 |
 | 7 | **SWRST 与回读校验**：初始化是否允许 SWRST（会复位同总线所有 PCA9685）？是否要求 `MODE1` / `PRE_SCALE` 回读校验 | 初始化流程 | 硬件/设计负责人 |
-| 8 | **编译验证范围**：Coding 完成后是否执行 ARM 增量编译与零警告验证（前几轮为"不编译"） | 交付判定 | 用户 |
+| 8 | ~~编译验证范围~~ **已裁决（用户 2026-10-14）**：本轮不做编译验证，接入就绪性由静态检查与接口核对确认 | — | 已关闭 |
 | 9 | 规则文档滞后项：`AtomIntegration.md` §8（时钟头已提取）、§11 #7（端口状态） | 文档一致性 | 规则维护方 |
 | 10 | **与 ATOM-10/11 的窄接口形态**：他们声明什么能力（写目标/查就绪/查故障），本模块内核 API 需与之对齐 | 接口冻结 | ATOM-10/11 负责人 + 装配层 |
 | 11 | `Rule/ATOM7ConnectProject.md` 本轮暂不编写（裁决 #2） | 接入说明缺失 | 用户后续决定 |
-| 12 | **`array<int>` 读取约定**：`servo.pca9685.channel_range` 与 `servo.model.angle_range_deg` 是标量数组，本模块按 `getIntAt(key, index, "")` 读取；若 ATOM-15 采用其它约定（如 `nullptr` 或另一组键名）需同步 | 初始化能否通过 | ATOM-15 / 装配层 |
+| 12 | ~~`array<int>` 读取约定~~ **已解决（ATOM-15 2026-10-14 回复）**：按 `getIntAt(key, index, "")` 读取即可，`""` 与 `nullptr` 均兼容，ATOM-15 侧无需改动 | — | 已关闭 |
 | 13 | **故障发布代码冻结**（用户 2026-10-14）：暂不继续编写故障发布相关代码，已有 `ReportFault` 调用保留、不扩展 | 后续增量范围 | 用户后续解冻 |
 
 ---
@@ -464,3 +464,67 @@ private:
 1. `Config/dart_control.json` 缺少 `servo.pca9685.*`、`servo.model.*`、`timing.iic_comm_timeout_ms`（§11 #1）→ 真实启动会如实失败。
 2. `array<int>` 的 `IConfigView` 读取约定待与 ATOM-15 确认（§11 #12）。
 3. ATOM-10/11 的窄接口形态未冻结（§11 #10）；本模块内核 API 已提供 `writeTarget(int)` 与 `writeTarget(ServoMechanism)` 两种寻址及对应查询，便于装配层适配。
+
+---
+
+## 14. 接入就绪状态（Integration Readiness，2026-10-14）
+
+### 14.1 结论
+
+ATOM-07 已具备接入主系统的全部前提：CMake 目标与别名、公共契约依赖、注册步骤、配置键、对象图与生命周期接口齐备；装配层**无需解析配置、无需预打开设备**。
+本轮按用户裁决**不做编译验证**，因此“就绪”是接口层/结构层/配置层的结论（见 §14.4 与 §14.5）。
+
+### 14.2 装配层（Entry.cpp）需要做的事
+
+```cpp
+// 1) 对象图：bus -> core -> adapter；三者寿命由装配层保管（适配器与内核只持引用）
+auto bus  = std::make_unique<marshland::atom07::LinuxI2cBus>();   // 默认可构造
+auto core = std::make_unique<marshland::atom07::ServoCore>(
+                *bus, monotonic_clock,
+                &app_coordinator,   // app::IInputReporter*（可空）
+                &app_coordinator);  // app::IStateReader*（可空）
+auto servo = std::make_unique<marshland::atom07::LifecycleAdapter>(*core, config_view);
+
+// 2) 注册：RuntimeStep::InitializeIicPca9685（在 ATOM-10/11 的 InitializeServoOutputs 之前）
+if (!runtime.addModule(runtime::ModuleRegistration{
+        runtime::RuntimeStep::InitializeIicPca9685, true, std::move(servo)})) {
+    // 必须读取 runtime.lastRegistrationError()，禁止静默忽略
+}
+```
+
+- `LinuxI2cBus` 无参构造；设备路径 / 地址 / 超时由内核在 `initialize()` 内按配置打开（镜像 ATOM-03 的 `configure()` 模式）。
+- `IInputReporter*` 与 `IStateReader*` 均可空：不注入则不发布故障事实、不做闸门判定（仅保留可查询故障）。
+
+### 14.3 装配层依赖的 ATOM-07 接口清单
+
+| 符号 | 位置 | 用途 |
+|---|---|---|
+| `marshland::atom07::LinuxI2cBus` | `Inc/atom07_servo_driver/linux_i2c_bus.hpp` | `II2cBus` 生产实现（默认可构造，`open()` 由内核调用） |
+| `marshland::atom07::ServoCore` | `Inc/atom07_servo_driver/servo_core.hpp` | 内核：`start` / `stop` / `isReady` / `writeTarget(int \| ServoMechanism, deg)` / `lastAcceptedTarget` / `lastIicFault` / `resetFault` |
+| `marshland::atom07::LifecycleAdapter` | `Inc/atom07_servo_driver/lifecycle_adapter.hpp` | 唯一 `ILifecycleModule` 实现 |
+| `marshland::atom07::ServoConfig` / `LoadServoConfig` | `Inc/atom07_servo_driver/servo_config.hpp` | 配置加载（适配器内部使用；装配层一般不需要） |
+| `Marshland::atom_07_servo_driver` | `CMakeLists.txt` | 模块目标与别名 |
+
+### 14.4 就绪检查表
+
+- [x] CMake：目标 `atom_07_servo_driver` + 别名 `Marshland::atom_07_servo_driver`，链接 `Marshland::PublicHeaders`；`Atoms/CMakeLists.txt` 已 `add_subdirectory` 并加入聚合链接。
+- [x] 注册步骤 `RuntimeStep::InitializeIicPca9685` 存在于 `Atoms/Public/ILifecycle.hpp`，且先于 `InitializeServoOutputs`。
+- [x] 依赖仅为 Public 契约（`AppInterfaces.hpp` / `ILifecycle.hpp` / `IMonotonicClock.hpp` / `IConfigView.hpp` / `MarshlandTypes.hpp`）。
+- [x] 配置就绪：13 项必需键全部存在且合法（实测 `FEED` → 通道 4、`FIRE` → 通道 5）。
+- [x] ATOM-15 确认标量数组读取约定（`getIntAt(key, index, "")`，`""` 与 `nullptr` 兼容）。
+- [x] 无 `main()`、无独立可执行文件、无自行注册、无 JSON 自解析。
+- [x] 独立 IIC 线程在 `initialize()` 内创建、`shutdown()` 内 `join`；无运行中重启路径。
+- [x] 闸门：急停锁存 / 未就绪 / 故障锁存时本模块自身拒绝普通目标；持 `StateReadView` 租约期间无 I/O。
+- [ ] 编译验证（用户裁决本轮不做）。
+- [ ] 与 ATOM-10/11 的窄接口适配（由它们声明、装配层适配）。
+
+### 14.5 已知限制与待决策（不影响接入前提，但需知晓）
+
+1. **未编译**：本轮仅完成静态检查（结构、依赖、键表、括号配平），无编译器验证。
+2. **无配置热加载**：`ServoConfig` 只在 `initialize()` 读取一次（与 ATOM-03 一致）；若要求运行期热更新脉宽/角度范围，需追加 `configVersion()` 重读逻辑。
+3. **`resetFault()` 调用路径**：当前由持有 `ServoCore` 的装配层直接调用；若要求 ATOM-14 经窄端口恢复，需要新增端口（跨模块裁决）。
+4. **未提供 `enable()` / `disable()` / `getState()`**：`Design/Interface.md` §5.3 的机构控制器共同约束适用于 ATOM-10/11；本驱动暴露 `isReady()` / `lastIicFault()` / `lastAcceptedTarget()` / `config()`。
+5. **故障发布冻结**：现有 `ReportFault(true/false, SEVERE)` 调用保留，不再扩展（用户裁决）。
+6. `Lib/PCA9685A.hpp` 会被模块头文件 glob 收录（不编译、不链接）；如需彻底排除可在 `CMakeLists.txt` 中加 `EXCLUDE`。
+
+| 0.5 | 2026-10-14 | 接入就绪轮：`II2cBus` 增加 `open(device_path, address, timeout_ms)`，`LinuxI2cBus` 改为默认可构造，内核在 `start()` 内按配置打开总线（装配层无需解析配置）；关闭 §11 #8（不做编译验证）与 #12（ATOM-15 确认 `getIntAt(key, index, "")`）；新增 §14 接入就绪状态（装配对象图、接口清单、检查表、已知限制）。 |

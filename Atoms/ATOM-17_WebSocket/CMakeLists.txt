@@ -54,3 +54,21 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
+
+# 公共契约：上层在 add_subdirectory(Atoms) 之前已建立 Marshland::PublicHeaders
+if(TARGET Marshland::PublicHeaders)
+    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        Marshland::PublicHeaders)
+endif()
+
+# 第三方依赖只在有编译单元时 PRIVATE 链接，避免泄漏到对外接口
+if(ATOM_MODULE_SOURCES)
+    if(TARGET Marshland::ThirdPartyCivetweb)
+        target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE
+            Marshland::ThirdPartyCivetweb)
+    endif()
+    if(TARGET Marshland::ThirdPartyNlohmannJson)
+        target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE
+            Marshland::ThirdPartyNlohmannJson)
+    endif()
+endif()

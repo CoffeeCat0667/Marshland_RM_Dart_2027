@@ -3,6 +3,8 @@
 # 内容（均为 header-only，无编译单元）：
 #   httplib/httplib.h    cpp-httplib 0.61.0  (MIT, https://github.com/yhirose/cpp-httplib)
 #   nlohmann/json.hpp    nlohmann/json 3.12.0 (MIT, https://github.com/nlohmann/json)
+# 另有一个带编译单元的库：
+#   civetweb/            civetweb 1.16       (MIT, https://github.com/civetweb/civetweb)
 #
 # 约定：
 #   - 消费方以 ThirdParty 根为 include 根，写 #include "httplib/httplib.h" 或
@@ -50,3 +52,9 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pboettch/src/nlohmann/json-schema.hpp
 endif()
 
 add_subdirectory(pboettch)
+
+# --- civetweb ---------------------------------------------------------------
+# 集成逻辑收敛在 civetweb/CMakeLists.txt（已为本工程重写，不使用上游构建文件）；
+# 目标运行主机为 Linux ARM64，仅启用 WebSocket（ATOM-17 用），禁用 SSL/CGI。
+
+add_subdirectory(civetweb)

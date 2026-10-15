@@ -19,6 +19,21 @@
 #include "atom05_motor_pid/motor_core.hpp"
 #include "atom05_motor_pid/motor_interfaces.hpp"
 #include "atom05_motor_pid/lifecycle_adapter.hpp"
+#include "atom07_servo_driver/servo_core.hpp"
+#include "atom07_servo_driver/linux_i2c_bus.hpp"
+#include "atom07_servo_driver/lifecycle_adapter.hpp"
+#include "atom08_charge/charge_controller.hpp"
+#include "atom08_charge/charge_interfaces.hpp"
+#include "atom08_charge/lifecycle_adapter.hpp"
+#include "atom09_force/force_controller.hpp"
+#include "atom09_force/force_interfaces.hpp"
+#include "ForceTypes.hpp"
+#include "ForceInterfaces.hpp"
+#include "atom10_reload_feed/reload_feed_core.hpp"
+#include "atom10_reload_feed/reload_feed_interfaces.hpp"
+#include "atom10_reload_feed/lifecycle_adapter.hpp"
+#include "atom11_fire/fire_action.hpp"
+#include "atom11_fire/lifecycle_adapter.hpp"
 
 // Temporary stub implementations for ATOM-05 dependencies
 // TODO: Replace with actual implementations from ATOM-14 (safety) and assembly layer
@@ -121,6 +136,129 @@ private:
     marshland::can::ICanFrameSink* target_{nullptr};
 };
 
+// Stub implementations for ATOM-08 (Charge) dependencies
+class StubChargeMotorCommandSink final : public marshland::atom08::IMotorCommandSink {
+public:
+    explicit StubChargeMotorCommandSink(marshland::atom05::MotorCore& motor_core) noexcept
+        : motor_core_(motor_core) {}
+
+    bool submitVelocityTarget(std::uint8_t motor_id, std::int32_t rpm) noexcept override {
+        // Bridge to ATOM-05
+        // TODO: Implement actual motor command submission
+        std::fprintf(stderr, "[marshland] Charge motor command stub: motor=%d rpm=%d\n", motor_id, rpm);
+        return false;  // Stub always fails until ATOM-05 command interface is ready
+    }
+
+    bool clearVelocityTarget(std::uint8_t motor_id) noexcept override {
+        std::fprintf(stderr, "[marshland] Charge motor clear stub: motor=%d\n", motor_id);
+        return false;
+    }
+
+private:
+    marshland::atom05::MotorCore& motor_core_;
+};
+
+class StubLimitSwitchState final : public marshland::atom08::ILimitSwitchState {
+public:
+    bool readChargeLimit(std::uint8_t motor_id, marshland::atom08::LimitSwitchSample& out) const noexcept override {
+        // TODO: Connect to ATOM-06 when it's implemented
+        out.valid = false;
+        out.low = false;
+        return false;  // Report not ready until ATOM-06 exists
+    }
+};
+
+class StubChargeFaultReporter final : public marshland::atom08::IFaultReporter {
+public:
+    void reportChargeFault(marshland::atom08::ChargeFaultCode code,
+                          marshland::FaultSeverity severity) noexcept override {
+        std::fprintf(stderr, "[marshland] Charge fault: code=%d severity=%d\n",
+                     static_cast<int>(code), static_cast<int>(severity));
+    }
+};
+
+// Stub implementations for ATOM-09 (Force) dependencies
+class StubForceMotorCommandSink final : public marshland::atom09::IMotorCommandSink {
+public:
+    explicit StubForceMotorCommandSink(marshland::atom05::MotorCore& motor_core) noexcept
+        : motor_core_(motor_core) {}
+
+    bool submitVelocityTarget(int motor_id, std::int32_t rpm) noexcept override {
+        std::fprintf(stderr, "[marshland] Force motor command stub: motor=%d rpm=%d\n", motor_id, rpm);
+        return false;
+    }
+
+    bool stopMotor(int motor_id) noexcept override {
+        std::fprintf(stderr, "[marshland] Force motor stop stub: motor=%d\n", motor_id);
+        return false;
+    }
+
+    bool readFeedback(int motor_id, marshland::force::ForceMotorFeedback& out) noexcept override {
+        out.valid = false;
+        out.has_received = false;
+        out.rpm = 0;
+        out.timestamp_us = 0;
+        return false;
+    }
+
+    bool faultLatched(int motor_id) noexcept override {
+        return false;
+    }
+
+private:
+    marshland::atom05::MotorCore& motor_core_;
+};
+
+class StubForceFaultSink final : public marshland::atom09::IForceFaultSink {
+public:
+    void onForceActionFailed(const char* detail) noexcept override {
+        std::fprintf(stderr, "[marshland] Force action failed: %s\n", detail);
+    }
+};
+
+// Stub implementations for ATOM-10 (Reload/Feed) dependencies
+class StubReloadMotorPair final : public marshland::atom10::IReloadMotorPair {
+public:
+    explicit StubReloadMotorPair(marshland::atom05::MotorCore& motor_core) noexcept
+        : motor_core_(motor_core) {}
+
+    bool submitVelocityRpm(marshland::atom10::ReloadSide side, int rpm) noexcept override {
+        std::fprintf(stderr, "[marshland] Reload motor stub: side=%d rpm=%d\n", static_cast<int>(side), rpm);
+        return false;
+    }
+
+    bool requestZeroTorque(marshland::atom10::ReloadSide side) noexcept override {
+        std::fprintf(stderr, "[marshland] Reload zero torque stub: side=%d\n", static_cast<int>(side));
+        return false;
+    }
+
+    bool isSideUsable(marshland::atom10::ReloadSide side) const noexcept override {
+        return false;  // Report not usable until ATOM-05 bridge is ready
+    }
+
+private:
+    marshland::atom05::MotorCore& motor_core_;
+};
+
+class StubFeedActuator final : public marshland::atom10::IFeedActuator {
+public:
+    explicit StubFeedActuator(marshland::atom07::ServoCore& servo_core) noexcept
+        : servo_core_(servo_core) {}
+
+    bool moveToReloadPosition() noexcept override {
+        std::fprintf(stderr, "[marshland] Feed servo stub: move to reload position\n");
+        return false;
+    }
+
+    bool moveToStandbyPosition() noexcept override {
+        std::fprintf(stderr, "[marshland] Feed servo stub: move to standby position\n");
+        return false;
+    }
+
+private:
+    marshland::atom07::ServoCore& servo_core_;
+};
+
 } // anonymous namespace
 
 int main()
@@ -146,7 +284,7 @@ int main()
     marshland::atom15::ConfigStore config_store;
 
     marshland::runtime::RuntimeContext context{};
-    context.configuration_path = "./Config/dart_control.nlohmann";
+    context.configuration_path = "./Config/dart_control.json";
     RuntimeCoordinator runtime{context};
 
     // Register ATOM-15 to LoadConfiguration step
@@ -224,6 +362,15 @@ int main()
     // Wire the forwarding sink to motor_core
     forwarding_frame_sink.setTarget(&motor_core);
 
+    // ATOM-07: Servo objects
+    marshland::atom07::LinuxI2cBus servo_i2c_bus;
+    marshland::atom07::ServoCore servo_core(
+        servo_i2c_bus,
+        clock,
+        nullptr,  // IInputReporter* - optional fault reporting
+        nullptr   // IStateReader* - optional safety gate
+    );
+
     // Register ATOM-03 to InitializeSbusAndVision step
     auto sbus_adapter = std::make_unique<marshland::atom03::LifecycleAdapter>(
         sbus_core, config_store);
@@ -292,12 +439,144 @@ int main()
         return 1;
     }
 
-    // Remaining lifecycle adapters (ATOM-06..14, 16..19) are registered here once their
-    // implementations exist, following the same pattern: construct the kernel and
-    // its adapter, check addModule(), and read lastRegistrationError() on failure.
-    // Declare every object before AppCoordinator so that it outlives the adapters,
-    // which hold references only.
+    // Register ATOM-07 to InitializeIicPca9685 step
+    auto servo_adapter = std::make_unique<marshland::atom07::LifecycleAdapter>(
+        servo_core, config_store);
+
+    const bool servo_registered = runtime.addModule({
+        marshland::runtime::RuntimeStep::InitializeIicPca9685,
+        true,  // required: servo is critical hardware
+        std::move(servo_adapter)
+    });
+
+    if (!servo_registered) {
+        const auto error = runtime.lastRegistrationError();
+        std::fprintf(stderr, "[marshland] ATOM-07 registration failed: %s\n",
+                     marshland::runtime::toString(error));
+        return 1;
+    }
+
+    // ★ Create AppCoordinator early (before business-layer modules)
+    // This allows ATOM-08/09/10/11 to inject IControlAuthority and IStateReader
     AppCoordinator app{runtime, arbitrator, clock};
+
+    // ===== Business-layer modules (ATOM-08/09/10/11) =====
+    // These modules need AppCoordinator's interfaces, so they are constructed after app
+
+    // ATOM-08: Charge controller
+    StubChargeMotorCommandSink charge_motor_sink(motor_core);
+    StubLimitSwitchState charge_limit_switches;
+    StubChargeFaultReporter charge_fault_reporter;
+
+    marshland::atom08::ChargeController charge_controller(
+        config_store,           // IConfigView
+        clock,                  // IMonotonicClock
+        charge_motor_sink,      // IMotorCommandSink
+        charge_limit_switches,  // ILimitSwitchState
+        app,                    // IControlAuthority (from AppCoordinator)
+        app,                    // IStateReader (from AppCoordinator)
+        sbus_core,              // ISbusSnapshotReader
+        charge_fault_reporter   // IFaultReporter
+    );
+
+    // ATOM-10: Reload/Feed core
+    StubReloadMotorPair reload_motor_pair(motor_core);
+    StubFeedActuator feed_actuator(servo_core);
+
+    marshland::atom10::ReloadFeedCore::Dependencies reload_deps{
+        reload_motor_pair,      // IReloadMotorPair
+        feed_actuator,          // IFeedActuator
+        clock                   // IMonotonicClock
+    };
+
+    marshland::atom10::ReloadFeedConfig reload_feed_config{};
+    marshland::atom10::ReloadFeedCore reload_feed_core(reload_deps, reload_feed_config);
+
+    // Bind AppCoordinator interfaces after construction (late binding per ATOM10ConnectProject.md §5)
+    reload_feed_core.bindControlAuthority(app);
+    reload_feed_core.bindFaultReporter(&app);  // Optional but we provide it
+
+    // ATOM-09: Force controller (no lifecycle registration)
+    StubForceMotorCommandSink force_motor_sink(motor_core);
+    StubForceFaultSink force_fault_sink;
+
+    marshland::atom09::ForceController force_controller(
+        config_store,           // IConfigView
+        clock,                  // IMonotonicClock
+        sbus_core,              // ISbusSnapshotReader
+        app,                    // IStateReader (from AppCoordinator)
+        force_motor_sink,       // IMotorCommandSink
+        &force_fault_sink       // IForceFaultSink*
+    );
+
+    // Check ATOM-09 initialization (no lifecycle registration)
+    if (!force_controller.ready()) {
+        const char* error = force_controller.initializationError();
+        std::fprintf(stderr, "[marshland] ATOM-09 Force initialization failed: %s\n",
+                     error ? error : "unknown error");
+        // Continue anyway - force mechanism can degrade without blocking startup
+    }
+
+    // Register ATOM-08 (Charge) lifecycle adapter
+    auto charge_adapter = std::make_unique<marshland::atom08::LifecycleAdapter>(
+        charge_controller, config_store);
+
+    const bool charge_registered = runtime.addModule({
+        marshland::runtime::RuntimeStep::InitializeServoOutputs,
+        false,  // required: charge can fail without blocking startup
+        std::move(charge_adapter)
+    });
+
+    if (!charge_registered) {
+        const auto error = runtime.lastRegistrationError();
+        std::fprintf(stderr, "[marshland] ATOM-08 registration failed: %s\n",
+                     marshland::runtime::toString(error));
+        return 1;
+    }
+
+    // Register ATOM-10 (Reload/Feed) lifecycle adapter
+    auto reload_feed_adapter = std::make_unique<marshland::atom10::ReloadFeedLifecycleAdapter>(
+        reload_feed_core, config_store);
+
+    const bool reload_feed_registered = runtime.addModule({
+        marshland::runtime::RuntimeStep::InitializeServoOutputs,
+        false,  // required: reload/feed can degrade without blocking startup
+        std::move(reload_feed_adapter)
+    });
+
+    if (!reload_feed_registered) {
+        const auto error = runtime.lastRegistrationError();
+        std::fprintf(stderr, "[marshland] ATOM-10 registration failed: %s\n",
+                     marshland::runtime::toString(error));
+        return 1;
+    }
+
+    // Register ATOM-11 (Fire) lifecycle adapter
+    auto fire_adapter = std::make_unique<marshland::atom11::LifecycleAdapter>(
+        config_store,           // IConfigView
+        app,                    // IStateReader (from AppCoordinator)
+        app,                    // IControlAuthority (from AppCoordinator)
+        servo_core,             // ServoCore (direct ATOM-07 dependency)
+        nullptr                 // IFireEventOutlet* (optional)
+    );
+
+    const bool fire_registered = runtime.addModule({
+        marshland::runtime::RuntimeStep::InitializeServoOutputs,
+        true,  // required: fire mechanism is critical
+        std::move(fire_adapter)
+    });
+
+    if (!fire_registered) {
+        const auto error = runtime.lastRegistrationError();
+        std::fprintf(stderr, "[marshland] ATOM-11 registration failed: %s\n",
+                     marshland::runtime::toString(error));
+        return 1;
+    }
+
+    // Remaining lifecycle adapters (ATOM-06, 12..14, 16..19) are registered here once their
+    // implementations exist, following the same pattern.
+
+    // Start the application (all modules must be registered before this point)
     marshland::runtime::ModuleInitResult detail{};
     const int start_result = app.Start(&detail);
     if (start_result != AppCoordinator::kOk) {

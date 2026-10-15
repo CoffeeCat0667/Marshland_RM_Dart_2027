@@ -244,6 +244,13 @@ const char* kTestConfig = R"({
     "target_range": 15000
   },
   "force": {
+    "control_mode": "CLOSED_LOOP_PID",
+    "target_default_source": "SBUS_CH12",
+    "target_unit": "rpm",
+    "target_range": 15000,
+    "completion_criterion": "TIMED",
+    "calibration_method": "MANUAL",
+    "has_dedicated_fault_handling": false,
     "center_deadband_rpm": 0,
     "center_action": "ZERO_TORQUE"
   },
@@ -297,6 +304,7 @@ const char* kTestConfig = R"({
       {"name": "manual_charge_left", "channel": "CH8", "signal_type": "JOYSTICK"},
       {"name": "manual_charge_right", "channel": "CH9", "signal_type": "JOYSTICK"},
       {"name": "manual_reload", "channel": "CH3", "signal_type": "JOYSTICK"},
+      {"name": "manual_force", "channel": "CH12", "signal_type": "JOYSTICK"},
       {"name": "manual_yaw", "channel": "CH4", "signal_type": "JOYSTICK"},
       {"name": "manual_fire", "channel": "CH7", "signal_type": "SWITCH"}
     ]

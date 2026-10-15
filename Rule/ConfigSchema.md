@@ -10,9 +10,9 @@
 | 机器可读形式 | `Rule/ConfigSchema.schema.json`（JSON Schema 2020-12）—— **形式化契约，供 `ATOM-15` 直接校验**。本文件是它的中文可读说明；两者不一致时以 schema 文件为准并修订本文件 |
 | 消费者 | `ATOM-15`（解析、校验、提供查询）与 `ATOM-03`～`ATOM-19`（经 `IConfigView` 取值） |
 | 关联文档 | `Rule/AtomIntegration.md`（接入规范）、`Atoms/ATOM-15_Config_Persistence/PLAN.md`（实现方案） |
-| 版本 | 1.8 |
+| 版本 | 1.9 |
 | 编制日期 | 2026-09-27 |
-| 更新日期 | 2026-10-14 |
+| 更新日期 | 2026-10-15 |
 | 状态 | **正式**。修改本文件必须同步 `Design/Config.md` 与 `ConfigSchema.schema.json`；冲突时以 `Design/Config.md` 的数值为准并修订本文件 |
 
 **为什么需要本文件**：`Design/Config.md` 定义了约 200 项参数的**数值**，但没有规定 JSON 键名。
@@ -204,7 +204,7 @@
 | `timing.zero_torque_send_period_ms` | int | ms | 零力矩发送周期 |
 | `timing.reload_lift_run_s` | int | s | 换弹抬起**运行时间**（3）。左右电机抬起转速目标均成功提交后计时；到期将两台目标转速设为 0，均成功提交后判定抬起到位 |
 | `timing.reload_lower_run_s` | int | s | 换弹放下**运行时间**（3）。判据同上 |
-| `timing.feed_angle2_hold_ms` | int | ms | 供弹角度二保持时间（100） |
+| `timing.feed_angle2_hold_ms` | int | ms | ~~供弹角度二保持时间（100）~~ **v1.9 起作废**：供弹机构不再用角度控制，保持时间改由 `feed.hold_ms` 承载 |
 | `timing.feed_to_reload_lower_delay_s` | int | s | 供弹后换弹放下等待时间（2） |
 | `timing.fire_angle_hold_ms` | int | ms | 发射角度保持时间（100） |
 | `timing.sbus_loss_timeout_ms` | int | ms | SBUS 失联判定时间（200） |
@@ -326,15 +326,28 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 > **本文件 v1.6 及以前的「`reload[]` 四个舵机」键结构作废**：换弹不接入舵机；换弹不设置动作超时（3 s 为正常运行计时，不是故障超时）；原引用的 `timing.reload_*_settle_ms` 不存在。
 >
 > `Rule/ConfigSchema.schema.json` 的 `servo_mechanisms.reload[]` 与初始 JSON 仍为旧结构，其键结构迁移属 ATOM-10 / ATOM-15 接入范围，**待用户确认后另行实施**，不属本次文档更正。
-
-#### 2.7.2 供弹机构（`feed.*`，单舵机）
+>
+> **键结构裁决（2026-10-15，用户确认）**：速度目标采用**单个幅值键** `reload.speed_rpm`，方向为消费模块内约定（抬起左 +幅值 / 右 −幅值，放下左 −幅值 / 右 +幅值），不再设左右分立键。
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
-| `feed.servo_id` | int | — | 舵机编号 5 |
-| `feed.angle1_deg` | int | deg | 角度一（待机） |
-| `feed.angle2_deg` | int | deg | 角度二（换弹位） |
-| `feed.hold_ms` | int | ms | 角度二保持时间 |
+| `reload.speed_rpm` | int | rpm | 换弹速度目标**幅值**（2000，必须 >0）。方向约定：抬起左正右负、放下左负右正；数值权威为 `Config.md` §5.7 |
+
+> 左右电机映射（id 3/4、node `0x203`/`0x204`）由 `motor[]` 数组持有（`role` = `reload_right` / `reload_left`），`reload.*` 不重复登记。
+> `Rule/ConfigSchema.schema.json` 与初始 `Config/dart_control.json` 的迁移（旧 `servo_mechanisms.reload[]` 移除、`reload.speed_rpm` 入库）属 ATOM-15 接入范围，**待实施**，不属本次文档修订。
+
+#### 2.7.2 供弹机构（`feed.*`）
+
+> **更正（2026-10-15，用户裁决）**：供弹机构**硬件本身已变更，不再使用角度控制**。
+> 原 `feed.angle1_deg` / `feed.angle2_deg` 键**作废**，角度也不再由 `servo.channels[]` 的
+> `standby_deg` / `action_deg` 兜底；`Config.md` §5.7/§9.2 及 `Design/` 各文档中的供弹角度表述
+> 同步失效，新机构动作参数待 `Design/` 修订后另行增补。供弹时序（换弹位保持时间、最大动作时间、
+> 供弹后 2 s 放下等待）不变。
+
+| ID | 类型 | 单位 | 说明 |
+|---|---|---|---|
+| `feed.servo_id` | int | — | 供弹执行器编号 5（新机构的执行器类型与通道归属待 `Design/` 修订确认） |
+| `feed.hold_ms` | int | ms | 换弹位保持时间（100）；取代已作废的 `timing.feed_angle2_hold_ms` |
 
 #### 2.7.3 发射机构（`fire.*`）
 
@@ -533,13 +546,18 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 
 当前已确定 PCA9685A 通道映射：`FEED=4`、`FIRE=5`。FIRE 的舵机编号、待机角度和发射角度仍为待定，继续写 `null`；ATOM-07/10/11 不得推断这些仍未确定的字段。
 
+> **v1.9 注**：供弹机构硬件已变更、不再使用角度控制（见 §2.7.2 更正）。`servo.channels[]` 中
+> `FEED` 行的 `standby_deg` / `action_deg` 固定为 `null`；供弹是否仍占用 PCA9685A 通道 4，
+> 待 `Design/` 对新机构的修订确认。
+
 #### 2.10.4 动作策略（`servo.strategy.*`，`Config.md` §9.3）
+
+> **v1.9 删除**：`servo.strategy.reload_lift_group` / `servo.strategy.reload_lower_group` ——
+> 换弹机构为双 M3508、不接入舵机（见 §2.7.1），旧四舵机模型的策略键作废移除。
 
 | ID | 类型 | 说明 |
 |---|---|---|
-| `servo.strategy.reload_lift_group` | str | `USE_LIFT_ANGLES` |
-| `servo.strategy.reload_lower_group` | str | `USE_LOWER_ANGLES` |
-| `servo.strategy.feed_sequence` | str | `ANGLE1_TO_ANGLE2_TO_ANGLE1` |
+| `servo.strategy.feed_sequence` | str | `STANDBY_TO_ACTION_TO_STANDBY`（v1.9 起；原 `ANGLE1_TO_ANGLE2_TO_ANGLE1` 随供弹角度模型作废） |
 | `servo.strategy.fire_sequence` | str | `STANDBY_TO_FIRE_TO_STANDBY` |
 | `servo.strategy.estop_fire_servo` | str | `REJECT_ALL` |
 | `servo.strategy.estop_other_servos` | str | `HOLD` |
@@ -619,6 +637,8 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 
 | ID | 类型 | 单位 | 说明 |
 |---|---|---|---|
+| `websocket.listen_address` | str | — | 监听地址，`0.0.0.0` |
+| `websocket.port` | int | — | 端口（10002）；独立于 HTTP（10000）与视觉（10001） |
 | `websocket.message_version` | str | — | 消息版本，`"1.0"` |
 | `websocket.heartbeat_period_ms` | int | ms | 心跳周期（1000） |
 | `websocket.connection_timeout_ms` | int | ms | 连接超时（3000） |
@@ -757,7 +777,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
   ] },
   "vision":     { "port": 10001, "target_field": "yaw_speed" },
   "http":       { "port": 10000, "routes": [ "..." ] },
-  "websocket":  { "message_version": "1.0" },
+  "websocket":  { "port": 10002, "message_version": "1.0" },
   "persistence":{ "directory": "./Config", "file_name": "dart_control.json" },
   "fault":      { "table": [ "..." ] },
   "thread":     { "sched_policy": "SCHED_OTHER" },
@@ -791,10 +811,10 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 1 | **舵机参数归口** | `Config.md` §5.7 与 §9.2 两处均记供弹/发射舵机角度。本文件按 §5.7 组织（对应 `servo_mechanisms` 的 `feed`/`fire`），需确认 §9.2 是否仅冗余 |
+| 1 | **舵机参数归口** | 供弹侧已于 v1.9 裁决：供弹机构硬件变更、不再用角度控制，`feed.angle*_deg` 与 `servo.channels[]` 的 FEED 角度字段一并作废。剩余问题仅限 FIRE：`Config.md` §5.7 与 §9.2 两处记发射舵机角度，需确认 §9.2 是否仅冗余 |
 | 2 | **`schema_version` 与 `persistence.version_migration` 的关系** | 前者为 `const 1`，后者为 `false`；需确认两者语义不冲突（前者是结构版本，后者是迁移策略） |
 | 3 | **`Design/Config.md` 章节号复核** | 本文件的来源引用按编制时的章节号给出；`Design/Config.md` 已升版，若有章节号变动需逐条校正（数值引用不受影响） |
-| 4 | **`servo_mechanisms` 与 `servo.channels` 的重复** | 两处都记舵机角度/通道；需确认哪一份是权威，避免同值两写 |
+| 4 | **`servo_mechanisms` 与 `servo.channels` 的重复** | 换弹（v1.7）与供弹角度（v1.9）均已从键表移除，重复面收敛至 FIRE 的角度/通道两处登记；需确认哪一份是权威，避免同值两写 |
 
 ---
 
@@ -811,5 +831,6 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 | 1.6 | 2026-10-14 | **统一 SBUS 变力通道标准**：`force.target_default_source` 由 `SBUS_CH3` 修正为 `SBUS_CH12`（CH12 为变力专用映射，不使用通用 `x`），并同步 `Rule/ConfigSchema.schema.json` 的取值约束。 |
 | 1.7 | 2026-10-14 | 按 `Config.md` §5.7 更正 §2.7.1：换弹机构为**左右两台 M3508**，原「`reload[]` 四个舵机」键结构作废；§5 待裁决第 1 项章节号 §5.6 → §5.7。`servo_mechanisms.reload[]` 与初始 JSON 的键结构迁移待确认，未在本版实施。 |
 | 1.8 | 2026-10-14 | 落实蓄力 P1/P2、SBUS CH8/CH9 映射、ATOM-07 完整舵机配置与 IIC/线程配置；新增变力 `center_deadband_rpm` 和固定 `center_action=ZERO_TORQUE`，`ZERO_SPEED` 仅保留为扩展说明。 |
+| 1.9 | 2026-10-15 | 按用户裁决（经 ATOM-10 工作目录一次性例外授权修订本文件）：① §2.7.1 新增 `reload.speed_rpm` 单个幅值键（2000，方向为消费模块内约定：抬起左正右负、放下左负右正）；② §2.7.2 供弹机构硬件变更、不再使用角度控制，`feed.angle1_deg`/`feed.angle2_deg` 与 `timing.feed_angle2_hold_ms` 作废，保持时间由 `feed.hold_ms` 承载；③ 删除旧四舵机残留 `servo.strategy.reload_lift_group`/`reload_lower_group`，`servo.strategy.feed_sequence` 改为 `STANDBY_TO_ACTION_TO_STANDBY`；④ §2.10.3 注明 FEED 角度字段固定 `null`；⑤ 待裁决 #1/#4 收敛至 FIRE。**未同步** `ConfigSchema.schema.json` 与初始 `Config/dart_control.json`（不在本次授权范围；schema 与 JSON 的迁移待 ATOM-15 接入时实施）。 |
 
 

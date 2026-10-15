@@ -14,13 +14,37 @@
 
 namespace marshland::atom07 {
 
-LinuxI2cBus::LinuxI2cBus(std::string device_path,
-                         std::uint8_t device_address,
-                         unsigned transaction_timeout_ms) noexcept
-    : device_path_(std::move(device_path)),
-      address_(device_address),
-      timeout_ms_(transaction_timeout_ms == 0U ? 1U : transaction_timeout_ms)
+I2cStatus LinuxI2cBus::open(const char* device_path, std::uint8_t device_address,
+                            unsigned transaction_timeout_ms) noexcept
 {
+    if (device_path == nullptr || device_path[0] == '\0') {
+        return {false, EINVAL};
+    }
+    if (fd_ >= 0) {
+        return {true, 0}; // 幂等
+    }
+    try {
+        device_path_ = device_path;
+    } catch (...) {
+        return {false, ENOMEM};
+    }
+    address_ = device_address;
+    timeout_ms_ = (transaction_timeout_ms == 0U) ? 1U : transaction_timeout_ms;
+
+    fd_ = ::open(device_path_.c_str(), O_RDWR);
+    if (fd_ < 0) {
+        last_system_error_ = errno;
+        return {false, last_system_error_};
+    }
+    if (::ioctl(fd_, I2C_SLAVE, static_cast<long>(address_)) < 0) {
+        last_system_error_ = errno;
+        ::close(fd_);
+        fd_ = -1;
+        return {false, last_system_error_};
+    }
+    selected_address_ = static_cast<int>(address_);
+    last_system_error_ = 0;
+    return {true, 0};
 }
 
 LinuxI2cBus::~LinuxI2cBus() noexcept
@@ -28,26 +52,6 @@ LinuxI2cBus::~LinuxI2cBus() noexcept
     close();
 }
 
-bool LinuxI2cBus::open() noexcept
-{
-    if (fd_ >= 0) {
-        return true;
-    }
-    fd_ = ::open(device_path_.c_str(), O_RDWR);
-    if (fd_ < 0) {
-        last_system_error_ = errno;
-        return false;
-    }
-    if (::ioctl(fd_, I2C_SLAVE, static_cast<long>(address_)) < 0) {
-        last_system_error_ = errno;
-        ::close(fd_);
-        fd_ = -1;
-        return false;
-    }
-    selected_address_ = static_cast<int>(address_);
-    last_system_error_ = 0;
-    return true;
-}
 
 void LinuxI2cBus::close() noexcept
 {

@@ -20,16 +20,15 @@ class LinuxI2cBus final : public II2cBus {
 public:
     static constexpr std::size_t kMaxPayloadBytes = 32;
 
-    LinuxI2cBus(std::string device_path,
-                std::uint8_t device_address,
-                unsigned transaction_timeout_ms) noexcept;
+    LinuxI2cBus() noexcept = default;
     ~LinuxI2cBus() noexcept override;
 
     LinuxI2cBus(const LinuxI2cBus&) = delete;
     LinuxI2cBus& operator=(const LinuxI2cBus&) = delete;
 
-    // 打开设备并绑定从机地址；重复调用幂等。
-    bool open() noexcept;
+    // 打开设备并绑定从机地址（幂等）；参数在 start() 时由内核按配置传入。
+    I2cStatus open(const char* device_path, std::uint8_t device_address,
+                   unsigned transaction_timeout_ms) noexcept override;
 
     I2cStatus write(std::uint8_t device_address, std::uint8_t reg,
                     const std::uint8_t* data, std::size_t size) noexcept override;
