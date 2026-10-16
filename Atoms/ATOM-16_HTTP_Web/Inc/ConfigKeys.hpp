@@ -29,7 +29,7 @@ inline constexpr const char* kRequestTimeoutMs       = "http.request_timeout_ms"
 inline constexpr const char* kRoutes                = "http.routes";
 inline constexpr const char* kErrorResponseTemplate = "http.error_response_template";
 inline constexpr const char* kErrorCodes            = "http.error_codes";
-inline constexpr const char* kStatusMapping         = "http.status_mapping";
+inline constexpr const char* kStatusMapping         = "http.http_status_mapping";  // 以 schema.json 为准（ConfigSchema.md 文档名 status_mapping 不一致，BUG-20261015-16-02）
 
 // ---- 手动控制动作集（http.manual_actions[]，ConfigSchema.md §2.12.3） -------
 inline constexpr const char* kManualActions = "http.manual_actions";

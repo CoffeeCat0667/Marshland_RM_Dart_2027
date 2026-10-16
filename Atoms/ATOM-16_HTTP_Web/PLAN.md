@@ -1,7 +1,7 @@
 # ATOM-16 HTTP/Web 实现方案（v3.2，依赖选型全部确定）
 
 > 依据：`Design/Atomic/ATOM-16_HTTP_Web.md`、`Design/{PRD,Interface,Config,PEF,Atoms,LifecycleEvents}.md`、`Atoms/Public/` 全部公共头文件与 AppCoordinator 实现（经用户授权只读一次）。
-> 变更记录：v2 完成设计对齐；v3 确定 HTTP/JSON 库选型方向，记录 auto/stop 文档冲突报告，下游接口与前端设为 TODO/调研项；v3.1 JSON 改 header-only 方向；v3.2 确定 JSON 库为 nlohmann/json，第三方库存放于上层共享目录 `NewVersion/ThirdParty`；v3.3 读入 `Rule/ConfigSchema.md`（用户授权），按规范键名落地首批源码（PLAN §6 第 1~5 步），新增 §7.5 缺口清单。
+> 变更记录：v2 完成设计对齐；v3 确定 HTTP/JSON 库选型方向，记录 auto/stop 文档冲突报告，下游接口与前端设为 TODO/调研项；v3.1 JSON 改 header-only 方向；v3.2 确定 JSON 库为 nlohmann/json，第三方库存放于上层共享目录 `NewVersion/ThirdParty`；v3.3 读入 `Rule/ConfigSchema.md`（用户授权），按规范键名落地首批源码（PLAN §6 第 1~5 步），新增 §7.5 缺口清单；v3.4 全量重读（2026-10-15），记录四项裁决（§8），前置阻塞登记至 `Public/GeneralBugs/2026-10-15-ATOM16.md`。
 
 ## 1. 目标与边界
 
@@ -159,22 +159,17 @@
 - JSON：nlohmann/json **3.12.0**（实际入库版本）。
 - 放置：上层共享目录 `NewVersion/ThirdParty`，`ThirdParty/CMakeLists.txt` 已建（两个 INTERFACE 目标 + 别名），本模块 `CMakeLists.txt` 已兜底接线（§4.3）。
 
-### 7.2 `/api/control/auto/stop` 可用性冲突 —— 待用户裁决（附详细报告）
+### 7.2 `/api/control/auto/stop` 可用性冲突 —— 已裁决（2026-10-15）：始终可用
 
-**冲突原文（逐字摘录）**：
+**裁决结果**：`POST /api/control/auto/stop`（置停止发射标志）**始终可用**，不受急停/故障/优先级阻挡。佐证：`StateArbitrationTypes.hpp` 中 `IntentKind::STOP_FIRE_SET` 注释"安全单调：只收紧，不受优先级阻断"。**文档待同步**：`Design/Config.md:476`（及 :485、:502）需修订为"始终可用"（记录于 `Public/GeneralBugs/2026-10-15-ATOM16.md` BUG-08）。
+
+<details><summary>冲突原文存档（裁决依据）</summary>
 
 - Interface.md:680（§14.2 路由表）：`| POST | /api/control/auto/stop | 设置停止发射 | WEB | 始终可用 |`
-- Config.md:476（§11.2 路由表）：`| POST | /api/control/auto/stop | 设置停止发射 | WEB | request_id、stop（bool） | request_id、accepted、stop_fire、auto_fire_state、error | 应急链路；无急停、活动故障或更高优先级控制接管时可用 |`
-- Config.md:485（§11.2 补充说明）：`链路分工：…… /api/control/auto/start 与 /api/control/auto/stop 专用路由是应急链路（无急停、故障或更高优先级接管）；两条链路同时存在。`
+- Config.md:476（§11.2 路由表）：`应急链路；无急停、活动故障或更高优先级控制接管时可用`
+- Config.md:485：`链路分工：…… 专用路由是应急链路（无急停、故障或更高优先级接管）；两条链路同时存在。`
 
-**相关佐证**：停止发射标志的设置方三份文档一致为"WEB 前端（`/api/control/auto/stop`）"（Config.md:40、PEF.md:32）；Interface.md:657 总纲"HTTP 请求不得绕过控制权仲裁和安全状态"；Interface.md:687 明确"请求、响应、错误码和字段结构由 Design/Config.md 配置表定义"。
-
-**分析**：
-
-- 按 Config 解释（受限）：急停/活动故障/SBUS 接管期间调用 auto/stop 返回对应错误（`ESTOP_ACTIVE`/`FAULT_ACTIVE`/`CONTROL_PREEMPTED`）。语义自洽——急停已锁死所有发射，再设 stop_fire 无意义；但存在反例：故障恢复期间操作员可能希望先置 stop_fire 再上电。
-- 按 Interface 解释（始终可用）：stop_fire 是纯软件标志，设置它本身不驱动任何机构，"不得绕过仲裁"针对的是控制动作而非安全标志；置标志反而是"更安全方向"的操作。与 `/api/control/estop`"始终可用"形成一致的安全哲学。
-- 文档层级规则（Interface.md:687、Config 是配置唯一来源）倾向 Config 为准，但 Interface 的"始终可用"更像有意为之的安全设计而非笔误。
-- **实现影响**：差异只在 auto/stop 路由 handler 的前置校验分支；接口结构不变，裁决后改动极小。本模块先把分派与响应骨架写好，校验策略留作可配置分支。
+</details>
 
 ### 7.3 下游接口缺口 —— TODO（本期不做）
 
@@ -210,7 +205,16 @@ ATOM-13/14/15/18/19 的 C++ 接口尚未在 Public 定义。当前所有分派�
 5. **`total_shots`**：`/api/state` 响应的 total_shots 当前硬编码 4（Interface §6.6 固定四发）；如 baseline 域有对应键（ConfigSchema `baseline.*`），应改为配置读取。
 6. **日志上报**：响应体超限"记录错误"（Config.md:462）需要 ATOM-18 日志接口，当前无注入通道，代码中已留 TODO。
 
-## 8. 必须落实的安全约束
+## 8. 裁决记录（2026-10-15 用户裁决，全量重读后）
+
+1. **桥接方式**：ATOM-16 在自有 `Inc/` 定义窄接口（蓄力/换弹供弹/发射/舵机/急停确认/参数写入各一），装配层在 Entry.cpp 写适配器桥接到机构模块；**ATOM-16 不包含任何模块私有头**。
+2. **auto/stop**：始终可用（见 §7.2）。
+3. **http 配置节**：由用户按 `Public/GeneralBugs/2026-10-15-ATOM16.md` §3 草稿补入 `dart_control.json`；补齐前 ATOM-16 保持 fail-closed（缺配置即初始化失败）。
+4. **web_online**：ATOM-16 不上报；由 ATOM-17（WS 长连接+心跳）唯一上报。
+
+全量重读发现的 11 项前置阻塞/缺陷（归属其他方）已登记：`Atoms/Public/GeneralBugs/2026-10-15-ATOM16.md`（含汇总表、归属索引、逐条细节、配置草稿）。
+
+## 9. 必须落实的安全约束
 
 - 所有控制请求经状态机、ControlArbiter、SafetyManager；本模块自身不做安全判断、不直接操作硬件。
 - 发射授权严格 `SBUS > WEB > 自动流程`；`fire_once` 前经 `AuthorizeManualFire` 复核急停/故障/stop_fire/yaw/优先级。
@@ -222,24 +226,17 @@ ATOM-13/14/15/18/19 的 C++ 接口尚未在 Public 定义。当前所有分派�
 - 校准/调试执行命令在急停、故障锁定、未初始化状态下拒绝；调试查询只读，不获得控制权。
 - 未接通下游的桩路由返回 `DEPENDENCY_UNAVAILABLE`（503），不得谎报成功（§7.3）。
 
-## 9. 验证方案
+## 10. 验证方案
 
 - 编译验证：由上层 CMake 在允许的 Ubuntu ARM/aarch64 环境（WSL 交叉编译或目标主机编译）完成；本模块不配置独立架构和入口。第三方头文件库（httplib + nlohmann/json）需在该环境验证编译。
 - 单元测试：请求体上限（413）、handler 超时（408）、JSON 解析错误、action 白名单拒绝、target/模式/权限校验、`RejectReason`→错误码映射、响应序列化、`request_id` 贯通、`effective`/`persisted` 双结果、桩路由 503。
 - 集成测试：监听地址/端口、静态资源不触发机构动作、状态/诊断查询、手动控制分派、auto_start 的 accepted+request_id、断线与急停行为、SBUS 优先级抢占返回 `CONTROL_PREEMPTED`。
 - 安全回归：WEB 不越过仲裁器直触硬件；急停期间发射舵机命令全拒；急停解除必须人工确认；WEB 断线不恢复自动流程。
 
-## 10. 当前状态
+## 11. 当前状态
 
-- 已建立模块级 CMake 目标 `atom16_http_web`，随首批源码落地自动转为 STATIC（GLOB_RECURSE 收集 `Src/*.cpp`），并链接 `Marshland::PublicHeaders`、`Marshland::ThirdPartyHttplib`、`Marshland::ThirdPartyNlohmannJson`、`Threads::Threads`。
-- 已完成：全部设计文档与 Public 接口对齐分析；依赖选型并入库（cpp-httplib 0.61.0 + nlohmann/json 3.12.0，上层 `NewVersion/ThirdParty`）；`ThirdParty/CMakeLists.txt`；auto/stop 冲突报告（§7.2）。
-- **首批源码已落地（PLAN §6 第 1~5 步）**：
-  - `Inc/ConfigKeys.hpp` — `http.*` 键名（ConfigSchema.md §2.13 逐字）；
-  - `Inc/ApiError.hpp` — 15 个错误码 + HTTP 状态映射（过渡硬编码，见 §7.5-2/3）；
-  - `Inc/ErrorMapping.hpp` — `RejectReason`/`RunGateReason`/`ConfigStatus` → `ErrorCode`；
-  - `Inc/JsonCodec.hpp` + `Src/JsonCodec.cpp` — nlohmann 非抛异常解析封装（pImpl 隔离第三方头）+ 手写 JsonWriter；
-  - `Inc/HttpWebModule.hpp` + `Src/HttpWebModule.cpp` — `ILifecycleModule` 实现：fail-closed 读取 `http.*` 配置、绑定监听、低优先级服务线程、请求体 413/响应体 500 上限、handler 200ms→408 限时、统一错误 JSON、`request_id` 生成与回显；`GET /api/state` 全量实现（10 个响应字段逐字对齐 Config.md:473），其余 8 条路由为 503 桩（§7.3）。
-- **未经编译验证**：本机（Windows）无编译器，且规则禁止 x86 编译链；首次编译验证须在 Ubuntu ARM/aarch64 环境（WSL 或目标主机）进行。
-- 待用户决策：§7.2 auto/stop 可用性裁决；§7.5 各缺口（IConfigView 对象查询、NOT_FOUND→404、急停确认通道、total_shots 键、日志通道）。
-- TODO（本期不做）：§7.3 下游接口适配；§7.4 前端实现（继续调研）。
-- 下一步（§6 第 6~9 步）：`POST /api/control/manual` action 白名单与分派、急停/自动流程路由、`/api/parameters`、`/api/calibration`、`ReportWebOnline` 上报。
+- 模块目标 `atom16_http_web`（STATIC）+ 首批源码（生命周期骨架、配置读取、限界、错误体系、`/api/state`）已落地；前端演示骨架 v3（浅色简约风 + 纵向摇杆 ±5000 rpm）已在浏览器验证。
+- **2026-10-15 全量重读完成**：P0 循环依赖确认已解决（Entry.cpp 构造顺序重排）；四项裁决已记录（§8）；11 项前置阻塞登记于 `Atoms/Public/GeneralBugs/2026-10-15-ATOM16.md`。
+- **仍阻塞（等外部）**：http 配置节（用户补）、`allowed_modes` nested 查询（ATOM-15）、装配层注册与窄接口桥接（Entry.cpp）、ATOM-12/13/19 未实现（`yaw_set`/自动流程执行侧/校准只能 503 桩）。
+- **下一步（可立即开工）**：定义窄接口头文件；实现 `/api/diagnostics`（ATOM-18 三件套）、`/api/control/estop`、`/api/control/auto/stop`（始终可用）、`stop_fire_set/clear`、`force_set`（IForceController）、`GET /api/parameters`（只读）；`ConfigKeys.hpp` 键名修正（`http.http_status_mapping`）；静态资源 mount。
+- **未经编译验证**：首次编译须在 Ubuntu ARM/aarch64 环境进行。
