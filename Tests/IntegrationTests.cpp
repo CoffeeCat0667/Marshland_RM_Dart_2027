@@ -16,7 +16,7 @@
 #include "atom03_SBUS/linux_sbus_byte_stream.hpp"
 #include "atom03_SBUS/sbus_core.hpp"
 #include "atom03_SBUS/lifecycle_adapter.hpp"
-#include "SbusTypes.hpp"
+#include "Sbus.hpp"
 
 namespace {
 
@@ -106,7 +106,6 @@ const char* kTestConfig = R"({
     "can_io_period_ms": 20,
     "gpio_sample_period_ms": 20,
     "sbus_receive_period_ms": 20,
-    "websocket_push_period_ms": 20,
     "estop_response_max_ms": 100,
     "zero_torque_send_period_ms": 20,
     "reload_lift_run_s": 3,

@@ -474,6 +474,8 @@ private:
 ATOM-07 已具备接入主系统的全部前提：CMake 目标与别名、公共契约依赖、注册步骤、配置键、对象图与生命周期接口齐备；装配层**无需解析配置、无需预打开设备**。
 本轮按用户裁决**不做编译验证**，因此“就绪”是接口层/结构层/配置层的结论（见 §14.4 与 §14.5）。
 
+> **2026-10-14 档 A 精简后更新**：对外契约已收敛为单头 `servo_driver.hpp`，装配接线改为 `MakeLinuxI2cBus()` + `ServoCore` + `LifecycleAdapter`。**以 §15 为准**；§14.2 / §14.3 保留为精简前快照。
+
 ### 14.2 装配层（Entry.cpp）需要做的事
 
 ```cpp
@@ -528,3 +530,159 @@ if (!runtime.addModule(runtime::ModuleRegistration{
 6. `Lib/PCA9685A.hpp` 会被模块头文件 glob 收录（不编译、不链接）；如需彻底排除可在 `CMakeLists.txt` 中加 `EXCLUDE`。
 
 | 0.5 | 2026-10-14 | 接入就绪轮：`II2cBus` 增加 `open(device_path, address, timeout_ms)`，`LinuxI2cBus` 改为默认可构造，内核在 `start()` 内按配置打开总线（装配层无需解析配置）；关闭 §11 #8（不做编译验证）与 #12（ATOM-15 确认 `getIntAt(key, index, "")`）；新增 §14 接入就绪状态（装配对象图、接口清单、检查表、已知限制）。 |
+
+---
+
+## 15. 档 A 精简结果与对外契约清单（2026-10-14）
+
+> **已被 §16 取代**：用户要求进一步收敛到「生命周期 + 装配 + 传参」，对外可调用符号 22 → 8。本节保留为档 A 快照。
+
+### 15.1 精简后的文件布局
+
+```text
+Inc/atom07_servo_driver/
+├── servo_driver.hpp          ← 唯一对外契约头（201 行）
+└── detail/                   ← 实现细节（不属于对外契约）
+    ├── servo_config.hpp      （ServoConfig / LoadServoConfig）
+    ├── pca9685_device.hpp    （寄存器常量 + computePrescale + Pca9685Device）
+    ├── angle_to_pulse.hpp    （角度 → 脉宽 → 计数值）
+    └── linux_i2c_bus.hpp     （Linux /dev/i2c-N 实现）
+Src/
+├── servo_core.cpp            （PIMPL：配置读取 / 总线打开 / 设备初始化 / IIC 线程）
+├── lifecycle_adapter.cpp     （28 行，唯一 ILifecycleModule 实现）
+├── servo_config.cpp          （逐键配置读取）
+├── pca9685_device.cpp        （SWRST + 回读校验 + 通道写）
+├── angle_to_pulse.cpp        （纯函数）
+└── linux_i2c_bus.cpp         （Linux I2C + MakeLinuxI2cBus 工厂）
+```
+
+### 15.2 装配层接线（精简后，替代 §14.2）
+
+```cpp
+auto bus   = marshland::atom07::MakeLinuxI2cBus();          // 生产实现（分配失败返回 nullptr）
+auto core  = std::make_unique<marshland::atom07::ServoCore>(
+                 *bus, config_view, monotonic_clock,
+                 &app_coordinator,    // app::IInputReporter*（可空）
+                 &app_coordinator);   // app::IStateReader*（可空）
+auto servo = std::make_unique<marshland::atom07::LifecycleAdapter>(*core);
+
+if (!runtime.addModule(runtime::ModuleRegistration{
+        runtime::RuntimeStep::InitializeIicPca9685, true, std::move(servo)})) {
+    // 读取 runtime.lastRegistrationError()
+}
+```
+
+要点：配置视图改由 `ServoCore` 构造期持有；`LifecycleAdapter` 只持 `ServoCore&`；
+`start()` 内部完成配置读取 → 打开总线 → PCA9685A 初始化（含回读校验）→ 启动独立 IIC 线程。
+
+### 15.3 对外契约清单（单头 `servo_driver.hpp`）
+
+| 类别 | 符号 | 形式 |
+|---|---|---|
+| 工厂 | `MakeLinuxI2cBus()` | `std::unique_ptr<II2cBus>` |
+| 抽象 | `II2cBus` | 6 个纯虚方法：`open` / `write` / `read` / `writeRaw` / `isOpen` / `close` |
+| 内核 | `ServoCore` | 10 个方法：`start` / `stop` / `isReady` / `writeTarget(int,deg)` / `writeTarget(ServoMechanism,deg)` / `lastAcceptedTarget(int)` / `lastAcceptedTarget(ServoMechanism)` / `lastIicFault` / `resetFault` / `lastError` |
+| 生命周期 | `LifecycleAdapter` | 3 个：`initialize` / `shutdown` / `name` |
+| 枚举 | `ServoMechanism`(4) / `ServoStatus`(9) / `ServoFaultKind`(4) | — |
+| 结构体 | `I2cStatus{ok, system_error}` / `WriteResult{...}` / `ServoFault{...}` | `ok()` / `active()` 为 inline 判定 |
+
+合计：**1 个对外头、3 个类、1 个工厂函数、3 个结构体、3 个枚举**；
+可调用公开符号 **22 个**（II2cBus 6 + 工厂 1 + ServoCore 10 + LifecycleAdapter 3 + `ok()` / `active()` 2）。
+精简前同一口径为 45 个（34 个类方法 + 2 个 inline 判定 + 6 个自由函数 + 3 个 `ToString`），即 **−51%**。
+
+### 15.4 移出对外契约的内容（现为 detail 内部）
+
+- `LinuxI2cBus`（含其 8 个公开成员）→ 只经 `MakeLinuxI2cBus()` 暴露；
+- `Pca9685Device` + 18 个寄存器/位常量 + `computePrescale`；
+- `angleToOffTicks` + `PulseConversion`；
+- `ServoConfig` / `ServoSlotConfig` / `ServoConfigLoadResult` / `LoadServoConfig`；
+- 3 个 `ToString`（无调用，直接删除）；`FindSlotById` / `FindSlotByMechanism`（内核未用，删除）；
+- `ServoStatus::InvalidArgument`、`pca9685::actualFrequency`、`LinuxI2cBus::transactionTimeoutMs`（死代码，删除）。
+
+### 15.5 体量说明（如实记录）
+
+| 指标 | 精简前 | 精简后 |
+|---|---|---|
+| 对外头文件 | 9 个 / 626 行 | **1 个 / 201 行** |
+| 对外可调用符号 | 45 | **22** |
+| 全部文件（头+源） | 15 个 / 1809 行 | **11 个 / 1744 行** |
+| 代码行（非空非注释） | 1403 | 1398 |
+
+**结论**：本轮削减的是**对外契约**（−47% 符号、−89% 对外头行数），不是代码总量；
+总行数基本持平（PIMPL 引入 Impl 定义、对外头新增使用说明注释）。
+若还要减少实现体量，需执行此前登记的「重复分支合并 / 配置校验样板抽取」两项，属另一轮工作。
+
+| 0.6 | 2026-10-14 | **档 A 精简**：对外契约收敛为单头 `Inc/atom07_servo_driver/servo_driver.hpp`；`LinuxI2cBus` / `Pca9685Device` / 寄存器常量 / 角度换算 / `ServoConfig` 全部移入 `detail/`（内部）；新增 `MakeLinuxI2cBus()` 工厂；`ServoCore` 改为 PIMPL、构造期注入 `IConfigView`、`start()` 无参并内置配置读取、新增 `lastError()`；删除死代码与未使用的查找函数。对外可调用符号 45 → 22。 |
+
+---
+
+## 16. 最小对外契约（2026-10-14 第三轮）
+
+### 16.1 外部只需要三件事
+
+1. **生命周期管理**：`LifecycleAdapter`（唯一 `ILifecycleModule` 实现，28 行）；
+2. **装配**：`ServoCore(config_view, clock, 可选输入端口, 可选状态端口)`；
+3. **传参命令**：`writeTarget(舵机 id 或机构, 角度)` —— 例 `writeTarget(ServoMechanism::Fire, 180.0)`。
+
+### 16.2 完整对外契约（单头 `servo_driver.hpp`，103 行）
+
+```cpp
+namespace marshland::atom07 {
+
+enum class ServoMechanism : uint8_t { Unknown, Reload, Feed, Fire };
+
+class ServoCore final {
+    ServoCore(const config::IConfigView&, const app::IMonotonicClock&,
+              app::IInputReporter* = nullptr, const app::IStateReader* = nullptr);
+    ~ServoCore() noexcept;
+    bool writeTarget(int servo_id, double angle_deg) noexcept;
+    bool writeTarget(ServoMechanism mechanism, double angle_deg) noexcept;
+    std::optional<double> lastAcceptedTarget(ServoMechanism mechanism) const noexcept;
+    void resetFault() noexcept;
+    const char* lastError() const noexcept;
+private:
+    friend class LifecycleAdapter;
+    bool start() noexcept;   // 生命周期内部入口（读配置/开总线/初始化/起线程）
+    void stop() noexcept;
+    struct Impl; std::unique_ptr<Impl> impl_;
+};
+
+class LifecycleAdapter final : public runtime::ILifecycleModule {
+    explicit LifecycleAdapter(ServoCore&) noexcept;
+    ModuleInitResult initialize(const RuntimeContext&) override;
+    void shutdown() noexcept override;
+    const char* name() const noexcept override;
+};
+}
+```
+
+**合计：2 个类、1 个枚举（4 值）、0 个结构体、0 个自由函数；可调用公开符号 8 个**
+（`writeTarget`×2 + `lastAcceptedTarget` + `resetFault` + `lastError` + `initialize` / `shutdown` / `name`）。
+
+| 口径 | 原始 | 档 A | 本轮最小面 |
+|---|---|---|---|
+| 对外头文件 | 9 个 / 626 行 | 1 个 / 201 行 | **1 个 / 103 行** |
+| 对外类 | 5 | 3 | **2** |
+| 对外结构体 | 7 | 3 | **0** |
+| 对外自由函数 | 6 | 1 | **0** |
+| 对外可调用符号 | 45 | 22 | **8**（−82%） |
+
+### 16.3 本次移除的内容与其代价
+
+| 移除项 | 代价 / 补偿 |
+|---|---|
+| `WriteResult` / `ServoStatus` / `ServoFault` / `ServoFaultKind` | 调用方只拿到 `bool`；失败原因经 `lastError()` 文本，例如 `writeTarget(id=5, mechanism=FEED, channel=4, angle=200.0): ANGLE_OUT_OF_RANGE`。若 ATOM-10/11 需要机器可判的错误分类，需加回 1 个枚举返回 |
+| `II2cBus` / `I2cStatus` / `MakeLinuxI2cBus()` | 总线由内核内部创建（`detail/linux_i2c_bus.hpp`）。测试替身注入不再属于契约；`Rule/AtomIntegration.md` §2.1 的「便于上层以测试替身验证」被弱化，如需恢复可在 `detail/` 增加注入工厂 |
+| `isReady()` | 未就绪时 `writeTarget` 返回 `false` 且 `lastError()` = `NOT_READY` |
+| `lastAcceptedTarget(int)`（id 重载） | 保留按机构的单一查询即可覆盖 FEED / FIRE |
+| `config()` 及配置访问器 | 下游若需通道映射须自行经 `IConfigView` 读取，或由装配层适配 |
+
+### 16.4 仍保留但可再删的两个符号（等你裁决）
+
+1. `resetFault()`：IIC 故障锁存后若无清除入口，驱动会永久拒绝普通目标；若确认由 ATOM-14 走其它恢复路径，可删（−1）。
+2. `lastAcceptedTarget()`：`Design/Atomic/ATOM-07_Servo_Driver.md` 内部原子操作第 7 项要求「查询最近接受的目标值且不得冒充物理反馈」；删掉后该项无法从外部验证，可删（−1）。
+
+两者都删则对外可调用符号降到 **6 个**（`writeTarget`×2 + `lastError` + 适配器 3），为本模块理论下限。
+
+| 0.7 | 2026-10-14 | **最小对外契约**：按用户要求收敛为「生命周期 + 装配 + 传参」。`ServoCore` 对外只剩 `writeTarget`×2 / `lastAcceptedTarget` / `resetFault` / `lastError`，`start()` / `stop()` 转为 private + `friend LifecycleAdapter`；`II2cBus`、`I2cStatus`、`MakeLinuxI2cBus()`、`WriteResult`、`ServoStatus`、`ServoFault`、`ServoFaultKind` 全部移入 `detail/`，总线改由内核内部创建。对外可调用符号 22 → 8（原始 45 → 8，−82%）。 |
+| 0.8 | 2026-10-14 | 内部缺陷修复（P0）：@servo.pca9685.address@ 的 @"0x40"@ 前缀被旧 @parseAddress()@ 拒绝，导致 @initialize()@ 必然失败；改为按 schema @^0x[0-9A-Fa-f]{2}$@ 严格解析，并用镜像脚本复验整条 @LoadServoConfig@ 链与角度换算（FEED 20°/30° → 148/171 ticks，FIRE 90°/180° → 307/512 ticks，181° 拒绝）。顺带移除 @linux_i2c_bus.cpp@ 中未使用的 @\<utility\>@。对外契约不变。 |

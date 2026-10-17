@@ -332,7 +332,6 @@ void TestStateIntentAndFireAuthorization()
           "stop clear accepted in manual");
     Check(authority.AuthorizeFire(ControlSource::WEB).allowed,
           "web fire authorized with all prerequisites satisfied");
-    authority.RefreshControlSource();
     Check(authority.AuthorizeManualFire(ControlSource::WEB).allowed,
           "manual fire authorized for web");
     Check(authority.AuthorizeManualFire(ControlSource::AUTO).reason == RejectReason::LOWER_PRIORITY_CONFLICT,

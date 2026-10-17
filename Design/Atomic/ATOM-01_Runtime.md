@@ -14,6 +14,12 @@
 
 ## 单一职责
 
+2026-10-17 接口同步：ATOM-02 不再维护系统启动状态，运行时的启动成功/失败仅由
+RuntimeCoordinator 自身记录，不调用已删除的 setStandby/setInitFailed。Entry
+主线程每 20 ms 调用 ATOM-02 控制源更新，并限时等待 SIGINT/SIGTERM；收到退出
+信号后仍在主线程调用既有 shutdown 接口，停止并 join 已启动线程，再反序清理。
+本次不改变 RuntimeCoordinator 内部实现，也不把 ATOM-02 删除的逻辑转交给它。
+
 管理应用进程和各模块的生命周期，按安全启动顺序创建模块、收集初始化结果，并决定系统进入待机或初始化失败状态。此 Atom 不执行发射流程或机构动作。
 
 ## 输入与输出

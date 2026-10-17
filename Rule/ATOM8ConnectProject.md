@@ -1,11 +1,103 @@
 # ATOM-08 接入工程结论 —— 对 `GeneralBugs/20261015-Entry.md` 的负责人评审
 
 **日期**：2026-10-15
-**出具方**：ATOM-08_Charge 负责人（工作目录 `Atoms/ATOM-08_Charge`）
+**出具方**：ATOM-08_Charge 负责人（工作目录 `../Atoms/ATOM-08_Control`）
 **评审对象**：`Atoms/Public/GeneralBugs/20261015-Entry.md`（Entry.cpp 集成 ATOM-08/09/10/11 架构冲突报告）
 **结论等级**：原报告定性为 "P0 架构冲突 / 循环依赖死锁"；本评审结论为 **不成立 —— 属装配层构造顺序问题，零 ATOM 改动可解**
+**更新（2026-10-16）**：新增 §9「工作线程接入约定」与 §10「`Entry.cpp` 待办清单（含接口变更强制同步）」——用户裁决：**纯逻辑 ATOM 不创建线程，线程由装配层自持、每模块一条**；模块只暴露 `tick(now_us)` 供该线程调用。
 
 ---
+
+## 10. `Entry.cpp` 待办清单（2026-10-16，ATOM-08 接口变更后）
+
+> 本节只列装配层需要做的事；ATOM-08 侧不改 `Entry.cpp`。
+> **§10.1 是强制同步项：`IMotorCommandSink` 已变更，旧桩不会编译通过。**
+
+### 10.1 【必须】同步电机适配器桩（否则 `marshland` 编译失败）
+
+ATOM-08 的窄端口已改为（`Inc/atom08_charge/charge_interfaces.hpp`）：
+
+| 旧签名 | 新签名 | 用途 |
+|---|---|---|
+| `submitVelocityTarget(motor_id, rpm)` | `submitVelocityTarget(motor_id, rpm, ControlSource source, ChargeCommandPurpose purpose)` | 补齐 ATOM-05 `MotorCommand` 必需的 `source` / `purpose`，否则恢复回零会被误标为普通命令 |
+| `clearVelocityTarget(motor_id)` | `holdZeroVelocityTarget(motor_id)` + `dropToZeroTorque(motor_id)` | 区分"0 rpm 闭环保持"（正常完成/回零完成）与"撤销目标并零力矩"（普通停止/急停/故障/回滚） |
+
+`Entry.cpp:140-159` 的 `StubChargeMotorCommandSink` 替换为：
+
+```cpp
+class StubChargeMotorCommandSink final : public marshland::atom08::IMotorCommandSink {
+public:
+    StubChargeMotorCommandSink(marshland::atom05::MotorCore& motor_core,
+                               std::int32_t output_limit_ma) noexcept
+        : motor_core_(motor_core), output_limit_ma_(output_limit_ma) {}
+
+    bool submitVelocityTarget(std::uint8_t motor_id, std::int32_t rpm,
+                              marshland::ControlSource source,
+                              marshland::atom08::ChargeCommandPurpose purpose) noexcept override {
+        const auto p = (purpose == marshland::atom08::ChargeCommandPurpose::SafetyRecovery)
+            ? marshland::atom05::CommandPurpose::SAFETY_RECOVERY
+            : marshland::atom05::CommandPurpose::CONTROL;
+        return motor_core_.submitCommand(marshland::atom05::MotorCommand(
+                   motor_id, marshland::atom05::MotorMode::VELOCITY,
+                   static_cast<double>(rpm), output_limit_ma_, source, p))
+               == marshland::atom05::MotorStatus::OK;
+    }
+
+    // 正常完成 / 回零完成：0 rpm 闭环保持（仍带有效速度目标）
+    bool holdZeroVelocityTarget(std::uint8_t motor_id) noexcept override {
+        return submitVelocityTarget(motor_id, 0, marshland::ControlSource::NONE,
+                                    marshland::atom08::ChargeCommandPurpose::Control);
+    }
+
+    // 普通停止 / 急停 / 故障撤销 / 提交失败回滚：零力矩
+    bool dropToZeroTorque(std::uint8_t motor_id) noexcept override {
+        return motor_core_.stopMotor(motor_id) == marshland::atom05::MotorStatus::OK;
+    }
+
+private:
+    marshland::atom05::MotorCore& motor_core_;
+    std::int32_t output_limit_ma_{0};
+};
+```
+
+构造处改为（`output_limit_ma` 从配置读取，键 `motor.control.output_limit`，**禁止硬编码**）：
+
+```cpp
+StubChargeMotorCommandSink charge_motor_sink(motor_core, motor_output_limit_ma);
+```
+
+### 10.2 【必须】修启动顺序：当前进程会在构造模块之前退出
+
+`Entry.cpp:305-318` 在 `app.Start()`（`:581`）**之前**调用 `config_store.getString("sbus.serial_device")`；配置只在 `LoadConfiguration` 步骤中装载（ATOM-15 适配器 → `config_store.cpp:1025`），未装载时所有 `get*` 返回 `NOT_LOADED` → 该分支打印错误并 `return 1`，**进程在构造 `AppCoordinator`/ATOM-08/09（`:461+`）之前就退出**。
+
+→ 修法：把该读取移到 `app.Start()` 成功之后，或在读取前显式 `config_store.load(context.configuration_path)`。
+
+### 10.3 【必须】为 ATOM-08 建周期线程
+
+按 §9：每模块一条线程，周期取 `timing.motor_loop_period_ms`（上限 `timing.max_control_cycle_ms`），调用 `charge_controller.tick(clock.nowMicros())`；**先 `join` 再 `app.Shutdown()`/析构**。
+
+### 10.4 【必须】命令桥接（WEB / SBUS / AUTO / ATOM-14 → `request*`）
+
+| 来源 | 应调用 |
+|---|---|
+| WEB `charge_start` / `charge_stop` / `charge_home`（ATOM-16 `IChargeDispatch` 已声明、未注入） | `requestCharge({source=FromControlSource, requester=ControlSource::WEB, request_id, timestamp_us})` / `requestStopCharge()` / `requestHome({source=FromControlSource, requester=WEB, ...})` |
+| SBUS 摇杆 | 装配层判定：`manual_charge`(CH2) 或左右通道非零 → `requestCharge(requester=SBUS)`；回中 → `requestStopCharge()`。**该触发规则目前没有实现方，需顶层裁决**（ATOM-08 只接受请求，不轮询起停） |
+| AUTO（ATOM-13） | `requestCharge({source=Explicit, left_rpm, right_rpm, requester=AUTO})`，或让其使用配置恒定速度 |
+| ATOM-14 恢复/急停解除 | `requestHome({requester=AUTO 或 NONE, ...})`；模式为 `RECOVERY` 时按 `SAFETY_RECOVERY` 放行 |
+
+### 10.5 其余装配层待办（按链路顺序）
+
+| # | 事项 | 归属 |
+|---|---|---|
+| 1 | `ILimitSwitchState` 适配器：现为恒"未就绪"桩（`:163-168`）→ 回零永不完成、25 s 后 `HomeTimeout` | ATOM-06 实现 + 装配层适配 |
+| 2 | 故障上报适配器：`IFaultReporter::reportChargeFault` → `IInputReporter::ReportFault`；并与 `IFaultRegistry`（code 需存在于 `fault.table[]`、等级由表给出）对齐；"蓄力/回零超时"表项缺失待补 | 装配层 + ATOM-14/18 |
+| 3 | 真实安全门：`StubMotorSafetyGate` 恒拒（`Entry.cpp:42`）→ ATOM-05 的 `submitCommand` 一律被拦；需 ATOM-02 + ATOM-14 双批准实现 | ATOM-14（+ATOM-02） |
+| 4 | 遥测：把 `ChargeController::status()` 接进 `mechanism_state.charge`（`state`/`target`/`feedback`/`error_code`；反馈可取 ATOM-05 `queryMotor`） | 装配层 + ATOM-16/17 |
+| 5 | 整机链接：公共 CAN 契约重构后 ATOM-14 仍编译失败（`CanIoResult`/`CanEvent` → 现为 `CanResult`/`CanEventKind`）；ATOM-16 同类（SBUS `readSbusSnapshot`） | ATOM-14、ATOM-16 |
+
+---
+
+
 
 ## 1. 总结论
 
@@ -87,7 +179,7 @@ app.Start(&detail);
 
 `Atoms/Public/ILifecycle.hpp:50-67` 明确：`RuntimeStep` 是**封闭的硬件/服务初始化步骤枚举**，注释写明"业务系统状态……不得作为 RuntimeStep 塞进本枚举"。其中**没有 ATOM-08 对应的步骤**。
 
-此事实已登记于 `Atoms/ATOM-08_Charge/PLAN.md` §2（"`RuntimeStep` 无 ATOM-08 对应步骤；`addModule()` 的步骤归属、`required` 与对象寿命由顶层装配/设计方决定"）与 §13（待外部裁决项 HB-4）。因此：
+此事实已登记于 `../Atoms/ATOM-08_Control` §2（"`RuntimeStep` 无 ATOM-08 对应步骤；`addModule()` 的步骤归属、`required` 与对象寿命由顶层装配/设计方决定"）与 §13（待外部裁决项 HB-4）。因此：
 
 - "ATOM-08 适配器必须经 `addModule()` 注册"本身就是顶层装配方的**待决假设**，不是既定架构；
 - 业务层模块由装配层在 `AppCoordinator` 构造之后显式调用 `initialize()` 也完全可行；
@@ -134,3 +226,56 @@ app.Start(&detail);
 1. 顶层装配方按第 3 节重排 `Entry.cpp` 构造顺序后重试集成；
 2. 无需召开架构评审，无需修改 `Rule/AtomIntegration.md`；
 3. 原报告 `GeneralBugs/20261015-Entry.md` 建议标注"根因已修正定性：装配层构造顺序问题，非架构冲突"，避免后续模块（ATOM-12/13/14/18）按错误结论设计。
+
+## 9. 工作线程接入约定（2026-10-16 用户裁决）
+
+**结论**：纯逻辑 ATOM（ATOM-08/09/…）**不创建线程**；线程由**装配层**在装配时创建、关闭时结束，**每模块一条**。模块只暴露 `tick(now_us)` 供该线程调用。
+
+### 9.1 责任分工
+
+| 责任 | 归属 |
+|---|---|
+| 创建/启动工作线程、决定周期与调度 | **装配层**（`Entry.cpp`） |
+| 周期内推进模块状态（计时/完成/超时/双限位判定/急停与故障撤销） | 模块 `ChargeController::tick(std::int64_t now_us)` |
+| 线程结束与 `join` | **装配层**，且必须在 `app.Shutdown()` 与对象析构**之前** |
+| 配置装载、目标撤销 | 模块（`configure()` / `reset()`，仅经 `LifecycleAdapter`） |
+
+### 9.2 装配层参考实现（每模块一条线程）
+
+```cpp
+// 周期必须来自配置（Rule/ConfigSchema.md §1.7：禁止臆造默认值）
+std::int64_t tick_period_ms = 0;
+if (config_store.getInt("timing.motor_loop_period_ms", tick_period_ms) != marshland::config::ConfigStatus::OK) {
+    // 如实失败：缺失/非法周期不得用猜测值代替
+}
+
+std::jthread charge_worker([&charge_controller, &clock](std::stop_token stop) {
+    auto next = std::chrono::steady_clock::now();          // 单调时钟绝对期限
+    while (!stop.stop_requested()) {
+        charge_controller.tick(clock.nowMicros());
+        next += std::chrono::milliseconds(tick_period_ms);
+        std::this_thread::sleep_until(next);
+    }
+});
+
+// 关闭顺序（硬约束）：
+charge_worker.request_stop();
+charge_worker.join();      // ① 必须先 join
+app.Shutdown();            // ② 再走各模块 shutdown()（LifecycleAdapter -> ChargeController::reset()）
+// ③ 之后才允许销毁 charge_controller 及其注入的桩/适配器
+```
+
+### 9.3 硬约束
+
+1. **先 `join` 再 `Shutdown()`/析构**：`tick` 会访问注入的 `IMotorCommandSink` / `ILimitSwitchState` / `IStateReader` 等对象；线程未结束就析构业务对象会造成悬垂访问（同类问题见 `GeneralBugs` 的 `ALL-ASM-10`）。
+2. **周期取自配置**：`timing.motor_loop_period_ms`，以 `timing.max_control_cycle_ms` 为上界；缺失/越界如实失败，禁止装配层硬编码周期。
+3. **单调时钟绝对期限 + 超期监测**：`Design/Config.md` §15；调度为 `SCHED_OTHER`，不构成硬实时保证。
+4. **模块侧零线程**：`ChargeController` 头文件不得出现 `std::thread` / `condition_variable` / `atomic` 成员（2026-10-16 已回退为外部 tick）。
+5. **每模块一条线程**：ATOM-08 与 ATOM-09/10 各自一条，互不共用。
+6. **`tick` 的可见性**：`tick` 属**装配部分**，仅装配层调用；模块**不向任何其他 ATOM 提供接口**，跨模块时序由装配层持有。
+
+### 9.4 与 `Rule/AtomIntegration.md` 的关系
+
+该文件 §3.1(b) 已写明"ATOM-08/09 当前计划采用外部 update/tick，**不自行创建线程**"，本约定与之**一致**；§8.6"生命周期适配器不内置线程业务循环"同样满足（适配器只做配置装载与结果翻译）。
+
+---

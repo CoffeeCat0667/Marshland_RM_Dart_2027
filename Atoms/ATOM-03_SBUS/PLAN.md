@@ -1,314 +1,100 @@
-# ATOM-03_SBUS Coding Plan
-
-> 状态：已实施代码，已按 RF209S Linux 接收模型调整为有限容量环形缓冲区；未执行编译。
-> 更新日期：2026-10-11
-> 验证方式：静态代码检查、接口一致性检查和形式化判定；本阶段不编译。
-
-## 1. 已冻结的功能范围
-
-### 1.1 主要职责
-
-ATOM-03 从已完成硬件电平反转的、由配置指定的串口设备独立线程读取 SBUS 帧，采用 25 字节组帧方式，不校验帧尾，完成有效性判断和 CH1～CH16 解码，并把结果保存到公共 SBUS 通道结构体。
-
-公共通道结构体必须使用互斥锁保护：
-
-- 读取线程先写入局部临时快照；
-- 一帧完整且有效后，在锁内一次性替换公共快照；
-- 读取方在锁内复制快照；
-- 不允许读取到半帧或跨帧混合数据。
-
-### 1.2 次要职责
-
-后续实现以下 ATOM-03 功能，但不直接驱动电机、舵机或其他执行器：
-
-- 连续通道数值校验与统一缩放；
-- CH5 控制源选择状态保存；
-- CH6 急停状态保存；
-- CH7 发射请求持续计数；
-- 最近有效帧时间记录；
-- 200 ms SBUS 失联判定；
-- 失联后 SBUS 普通控制失效并降级 WEB；
-- 有效帧恢复后按 CH5 重新选择控制源；
-- 不恢复已终止的自动发射流程；
-- 断连或重连不解除急停锁定。
-
-具体机构动作、控制权最终仲裁、安全恢复编排和发射执行不在本模块实现。
-
-## 2. 已冻结的通道和数值规则
-
-| 通道 | 含义 | 处理方式 |
-|---|---|---|
-| CH1 | 空 | 保留，不产生输出 |
-| CH2 | 蓄力机构速度 | 连续值写入结构体 |
-| CH3 | 换弹机构速度 | 连续值写入结构体 |
-| CH4 | YAW 电机速度 | 连续值写入结构体 |
-| CH5 | AUTO / WEB / SBUS 控制权分配 | 364=AUTO，1024=WEB，1684=SBUS |
-| CH6 | 软件急停 | 中心化值 `raw - 1024 > 0` 为正常，`< 0` 为急停，0 为中点 |
-| CH7 | 发射 | 原始值 364 连续保持 20 个有效帧后确认发射请求 |
-| CH8 | 蓄力机构左电机速度 | 连续值写入结构体 |
-| CH9 | 蓄力机构右电机速度 | 连续值写入结构体 |
-| CH10 | 换弹机构左电机速度 | 连续值写入结构体 |
-| CH11 | 换弹机构右电机速度 | 连续值写入结构体 |
-| CH12 | 变力机构速度 | 输出范围 `-2000～+2000 rpm` |
-| CH13～CH16 | 保留 | 不映射，不产生输出 |
-
-连续通道规则：
-
-- 原始中心值：`1024`；
-- 有效范围：`364～1684`，即 `1024 ± 660`；
-- 缩放公式：`output = (raw - 1024) * x`；
-- `x` 的配置键固定为 `sbus.channel_scale_x`；
-- `x` 类型为 `uint8_t`；
-- `x` 允许范围为 `1～10`；
-- 所有连续通道共用同一个 `x`；
-- 输出范围为 `-660*x`～`+660*x`。
-
-无效值处理：通道值超出有效范围的帧不得更新公共快照，不得刷新最近有效帧时间，不得形成任何状态或动作请求。
-
-## 3. 已冻结的运行约束
-
-- UART 设备名由 `IConfigView` 传入；`100000 baud, 8E2` 在 Linux UART 实现内固定。
-- 软件侧不执行电平反转。
-- UART 读取使用独立线程。
-- 线程启动、停止和资源释放由 UART/SBUS 后端负责；生命周期适配器只做编排。
-- 本模块不负责生命周期注册；上层装配层负责创建对象、注册适配器和检查注册结果。
-- 公共 SBUS 类型和通道快照放入 `Atoms/Public`。
-- ATOM-03 只能依赖 `Atoms/Public` 和 C++ 标准库，不得包含 `AppCoordinator.hpp` 或其他 ATOM 私有头。
-- 不在本模块定义 `main()`，不创建独立可执行文件。
-- 本阶段不编译，采用静态和形式化验证。
-
-## 4. 代码范围
-
-### 4.1 计划新增文件
-
-#### `Atoms/Public/`
-
-1. `SbusTypes.hpp`
-   - 16 通道原始值类型；
-   - 连续值/离散值相关类型；
-   - CH5 控制源原始状态；
-   - CH6 急停状态；
-   - CH7 发射请求计数/确认状态；
-   - 帧有效性、帧状态和最近有效帧时间字段；
-   - 公共通道快照结构体。
-
-2. `SbusInterfaces.hpp`
-   - UART 字节读取窄接口；
-   - SBUS 快照读取接口；
-   - SBUS 后端启动/停止接口；
-   - 只定义抽象能力，不绑定 Linux 串口具体类。
-
-#### `Atoms/ATOM-03_SBUS/Inc/atom03_SBUS/`
-
-1. `sbus_config.hpp`
-   - `IConfigView` 配置转换；
-   - 配置指定的串口设备名读取；
-   - `sbus.channel_scale_x` 的 `uint8_t` 转换和 1～10 范围检查。
-
-2. `sbus_decoder.hpp`
-   - 25 字节组帧；
-   - 不校验帧尾；
-   - 帧长度、通道值范围和解码接口。
-
-3. `sbus_channel_state.hpp`
-   - 模块内部状态组合和互斥访问封装；
-   - 如果公共快照已足够，此文件只保留内部计数/状态，不重复定义公共结构体。
-
-4. `sbus_uart_reader.hpp`
-   - 独立读取线程的生命周期和停止接口；
-   - 依赖 `Public` UART 窄接口，不绑定具体设备实现。
-
-5. `sbus_core.hpp`
-   - 组合 UART 读取、解码、快照更新、缩放和 CH5～CH7 状态处理。
-
-6. `lifecycle_adapter.hpp`
-   - 唯一的 `ILifecycleModule` 实现声明；
-   - 只保存核心对象引用，不包含业务循环。
-
-#### `Atoms/ATOM-03_SBUS/Src/`
-
-1. `sbus_decoder.cpp`
-   - 组帧、通道位解码和有效性校验实现。
-
-2. `sbus_uart_reader.cpp`
-   - 独立线程读取循环；
-   - 停止和阻塞读取取消处理。
-
-3. `sbus_core.cpp`
-   - 局部快照、互斥替换、缩放、CH5/CH6/CH7 状态逻辑和失联时间更新。
-
-4. `lifecycle_adapter.cpp`
-   - 配置读取、核心启动/停止和 `ModuleInitResult` 错误翻译；
-   - 不实现机构控制和仲裁业务。
-
-### 4.2 计划修改文件
-
-1. `Atoms/Public/CMakeLists.txt`
-   - 将新增 `SbusTypes.hpp` 和 `SbusInterfaces.hpp` 加入公共头文件源列表；
-   - 不增加平台选项、编译器选项或全局标准设置。
-
-2. `Atoms/ATOM-03_SBUS/CMakeLists.txt`
-   - 将目标别名从现有的 `Marshland::ATOM_03_SBUS` 修正为规范要求的 `Marshland::atom_03_SBUS`；
-   - 纳入 `Inc/` 和 `Src/` 文件；
-   - 保持模块目标为 `atom_03_SBUS`；
-   - 不定义 `project()`，不设置架构、编译器、C++ 标准或编译选项。
-
-3. `Atoms/ATOM-03_SBUS/PLAN.md`
-   - 随实现进度更新接口、验证结果和剩余风险；
-   - 不把未验证的公共接口或构建结果写成已完成。
-
-### 4.3 明确不修改文件
-
-本次 Coding 计划不修改以下范围：
-
-- 上层 `CMakeLists.txt`；
-- `Entry.cpp`；
-- ATOM-01、ATOM-02 及其他 ATOM 的私有实现；
-- `AppCoordinator` 具体实现；
-- 电机、舵机、CAN、GPIO 和 SafetyManager 的机构执行代码；
-- 不删除现有功能代码，不进行无关重构。
-
-## 5. Coding 阶段顺序
-
-### 阶段 0：接口冻结
-
-1. 固定 `SbusTypes.hpp` 中的公共字段和线程安全边界。
-2. 固定 `SbusInterfaces.hpp` 中的 UART 和快照接口。
-3. 固定 `IConfigView` 中 SBUS 配置键的解析规则。
-4. 明确 `CH5/CH6/CH7` 的结构体字段，不在 ATOM-03 内执行机构动作。
-
-### 阶段 1：公共契约
-
-1. 新增公共 SBUS 类型和接口。
-2. 修改 `Atoms/Public/CMakeLists.txt` 登记公共头文件。
-3. 静态检查公共头文件不能包含 ATOM 私有头。
-
-### 阶段 2：解析内核
-
-1. 实现 25 字节组帧。
-2. 明确不检查帧尾。
-3. 校验通道范围 `364～1684`。
-4. 解码 CH1～CH16。
-5. 使用局部快照和互斥锁原子更新公共结构体。
-6. 实现统一 `x` 缩放。
-
-### 阶段 3：状态处理
-
-1. 实现 CH5 三档控制源保存。
-2. 实现 CH6 中心化急停保存。
-3. 实现 CH7 原始值 364 的 20 个有效帧计数和确认状态。
-4. 实现最后有效帧时间和 200 ms 失联状态。
-5. 实现恢复后按 CH5 重新选择，不恢复已终止自动流程。
-
-### 阶段 4：UART 线程与生命周期适配器
-
-1. 实现配置指定串口设备的 Linux 后端接口注入。
-2. 实现独立读取线程。
-3. 确保停止路径不会永久阻塞。
-4. 实现生命周期适配器的初始化失败翻译、停止和幂等性。
-
-### 阶段 5：静态形式化验证
-
-- 检查所有头文件依赖方向；
-- 检查没有 `main()` 和独立可执行目标；
-- 检查 CH1～CH16 映射完整且 CH13～CH16 无输出；
-- 检查帧尾不参与有效性判定；
-- 检查无效帧不更新快照和时间；
-- 检查 `output = (raw - 1024) * x` 的边界；
-- 检查 CH5 三档、CH6 符号判定和 CH7 20 帧确认；
-- 检查互斥锁覆盖整帧替换和快照读取；
-- 检查 `shutdown()` 的幂等性和线程退出路径；
-- 检查 CMake 目标和别名命名。
-
-## 6. 验收判定表
-
-| 场景 | 预期结果 |
-|---|---|
-| 完整 25 字节帧，帧尾正确 | 解码并更新完整快照 |
-| 完整 25 字节帧，帧尾错误 | 不因帧尾单独拒绝；其余有效性通过则更新快照 |
-| 长度不足或通道值越界 | 丢弃帧，不更新快照，不刷新有效时间 |
-| 读取线程与快照读取并发 | 只能读取完整旧快照或完整新快照 |
-| CH5=364 | 保存 AUTO |
-| CH5=1024 | 保存 WEB |
-| CH5=1684 | 保存 SBUS |
-| CH6 中心化值大于 0 | 保存正常模式 |
-| CH6 中心化值小于 0 | 保存急停状态 |
-| CH6 中心化值等于 0 | 保存中点状态，不误触发急停 |
-| CH7 原始值连续 19 个有效帧为 364 | 不确认发射 |
-| CH7 原始值连续 20 个有效帧为 364 | 确认发射请求 |
-| CH7 中途出现非 364 有效帧 | 按确认的计数复位规则处理；默认清零连续计数 |
-| 连续通道 raw=1024 | 输出 0 |
-| 连续通道 raw=364 | 输出 `-660*x` |
-| 连续通道 raw=1684 | 输出 `+660*x` |
-| `x=1` 或 `x=10` | 通过范围校验 |
-| `x=0` 或 `x>10` | 配置校验失败 |
-| 超过 200 ms 无有效帧 | SBUS 普通控制失效并降级 WEB |
-| 有效帧恢复 | 按 CH5 恢复控制源，不恢复已终止自动流程 |
-| 急停后断连/重连 | 急停状态不自动解除 |
-
-## 7. 实施结果
-
-用户已确认：
-
-- CH7 中途出现非 364 的有效帧时清零连续计数；
-- UART 后端支持 cancel()，可打断阻塞读取；
-- 允许实施本计划；
-- 本轮不编译，只做静态和形式化验证。
-
-因此已按第 4 节范围实施代码和工程接入文档。
-## 8. 本次实施文件清单
-
-### 新增
-
-- `Atoms/Public/SbusTypes.hpp`
-- `Atoms/Public/SbusInterfaces.hpp`
-- `Atoms/ATOM-03_SBUS/Inc/atom03_SBUS/sbus_config.hpp`
-- `Atoms/ATOM-03_SBUS/Inc/atom03_SBUS/sbus_decoder.hpp`
-- `Atoms/ATOM-03_SBUS/Inc/atom03_SBUS/sbus_core.hpp`
-- `Atoms/ATOM-03_SBUS/Inc/atom03_SBUS/lifecycle_adapter.hpp`
-- `Atoms/ATOM-03_SBUS/Src/sbus_config.cpp`
-- `Atoms/ATOM-03_SBUS/Src/sbus_decoder.cpp`
-- `Atoms/ATOM-03_SBUS/Src/sbus_core.cpp`
-- `Atoms/ATOM-03_SBUS/Src/lifecycle_adapter.cpp`
-- `Rule/ATOM3ConnectProject.md`
-
-### 修改
-
-- `Atoms/Public/CMakeLists.txt`
-- `Atoms/ATOM-03_SBUS/CMakeLists.txt`
-- `Rule/ConfigSchema.md`
-- `Rule/ConfigSchema.schema.json`
-- `Atoms/ATOM-03_SBUS/PLAN.md`
-
-### 删除
-
-- 无删除。
-
-### 明确未修改
-
-- 上层 `CMakeLists.txt`；
-- `Entry.cpp`；
-- ATOM-01、ATOM-02 及其他 ATOM 私有实现；
-- `AppCoordinator` 具体实现；
-- 电机、CAN、GPIO、舵机和 SafetyManager 执行代码。
-
-## 9. 静态验证结果
-
-- [x] 无 `main()` 和独立可执行文件。
-- [x] ATOM-03 头文件位于 `Inc/atom03_SBUS/`，实现位于 `Src/`。
-- [x] Public 头文件不包含其他 ATOM 私有头。
-- [x] SBUS 25 字节组帧，不校验帧尾。
-- [x] CH1～CH16 解码，CH13～CH16 不产生映射输出，CH12 输出变力机构速度。
-- [x] 局部快照通过互斥锁一次性替换，读取返回完整快照。
-- [x] CH5、CH6、CH7 规则已固化。
-- [x] CH12 映射为变力机构速度：`364=-2000 rpm`、`1024=0 rpm`、`1684=+2000 rpm`。
-- [x] CH7 非 364 有效帧清零连续计数。
-- [x] `cancel()` 后 join 读取线程，`shutdown()` 幂等。
-- [x] `sbus.channel_scale_x` 已加入配置键文档和 JSON Schema。
-- [x] UART 批量读取接入有限容量环形缓冲区，持续消费缓冲数据，避免 UART 数据无限积压。
-- [x] UART 设备名由 `IConfigView` 的 `sbus.serial_device` 传入，`100000/8/E/2` 在 Linux UART 实现内固定。
-- [x] `LinuxSbusByteStream` 已实现实际设备打开、`termios2` 配置、批量读取、`cancel()` 和文件描述符释放。
-- [x] `TCGETS2/TCSETS2` 在系统头文件预定义场景下显式取消旧宏并绑定完整 `LinuxTermios2` 类型。
-- [x] 异常统一使用 `online=false` 表示；未增加 Byte 23、帧序号连续性检查或统计接口。
-- [x] `git diff --check` 通过目标文件检查。
-- [ ] 未执行 ARM 构建，符合本轮“不编译”要求。
+# ATOM-03 三文件实现
+
+- 日期：2026-10-16。
+- 用户确定的唯一功能：串口读到 SBUS -> 解码 -> 转换到已确定范围 -> 写入公共结构体。
+- 本次只改本模块、公共 Sbus.hpp 与对应设计说明；不迁移外部代码。
+
+## 1. 最终代码文件
+
+1. Inc/atom03_SBUS/sbus_private.hpp：唯一私有头，内部环形缓冲和解码声明。
+2. Src/sbus.cpp：唯一实现，串口配置与读取、组帧、解码、映射、数据更新。
+3. ../Public/Sbus.hpp：唯一公共头，SbusData 和 ReceiveSbus 声明。
+
+CMakeLists.txt 为工程构建描述，不增加任何代码管理层。私有 Inc 不向消费者导出。
+
+## 2. 删除范围
+
+- 删除 sbus_core、sbus_config、linux_sbus_byte_stream、lifecycle_adapter 的全部独立头和源文件。
+- 不保留 SbusCore、LinuxSbusByteStream、UART 抽象、生命周期接口、配置视图或线程管理器。
+- 不保留 start/stop/cancel 对象、后台线程、控制权解释、急停解释、发射确认、授权、序号、时间戳或失联降级。
+- 保留的停止标志仅用于退出阻塞接收循环，文件描述符在函数返回时关闭。
+
+## 3. 公共调用
+
+```cpp
+bool ReceiveSbus(const char* serial_device, SbusData& data,
+                 const std::atomic<bool>& stop_requested,
+                 std::uint8_t channel_scale_x, std::uint16_t frame_bytes,
+                 std::uint16_t channel_center, std::uint16_t channel_minimum,
+                 std::uint16_t channel_maximum,
+                 std::uint32_t read_timeout_ms = 20U) noexcept;
+```
+
+- 设备名和全部必要的数值参数直接传入，不读取 IConfigView 或 RuntimeContext。
+- 函数阻塞运行，线程由调用方提供；调用方负责数据和停止标志的存活期。
+- stop_requested=true 后在 poll 返回或当前数据批次结束后退出；最坏等待还受超时、锁等待和调度影响，不承诺立即 cancel。
+- 返回 true 仅表示正常请求停止；打开失败、配置失败、参数错误和永久 I/O 错误返回 false。
+- 固定 100000 baud、8E2；不进行软件反转。
+
+## 4. 数据和映射
+
+- 公共 SbusData 只保留 mutex、16 路 scaled_channels 和 online，不公开原始通道。
+- 原始值来自 16 路 11-bit 解析，只保存在接收函数的局部数组中；帧头 0x0F，不校验帧尾，不解析 Byte 23。
+- 帧长由参数决定，半帧保存在有限环形缓冲区；没有额外帧副本。
+- 通用输出 `(raw-center)*x`，x 为 uint8_t、1～10。
+- 推荐 364/1024/1684 输出 -660*x/0/+660*x；CH12 独立输出 -2000/0/+2000 rpm。
+- CH7 发射输入位于 scaled_channels[6]，CH13 供弹舵机输入位于 scaled_channels[12]；二者独立使用通用缩放，无持续帧数确认；仅 CH14～CH16 保留。
+- 不固定中点或有效范围，只检查最短载荷和运算边界，避免越界/除零。
+- 有效整帧加锁一次更新全部映射通道并置 online=true；进入接收、超时、无效数据、错误和函数退出置 online=false，保留上次数组。
+- 读者接收 const SbusData&，持有其 mutex 同时复制 scaled_channels 和 online，不持锁等待接收函数结束；离线时不能使用旧数组作为新输入。
+- online 反映接收事件，不是独立帧龄看门狗或执行授权。ReceiveSbus 参数和返回值不变。
+
+## 5. 验证范围
+
+- 清点模块恰好一个私有头、一个 cpp、一个公共 Sbus.hpp。
+- ARM 严格警告语法检查、Public-only 调用示例检查。
+- 现有 WSL ARM 构建目录中增量构建 atom_03_sbus，不构建最终程序。
+- 环形回绕、半帧、多帧、配置帧长、通道边界及 CH12 映射检查。
+- git diff --check；确认旧文件和管理层依赖已经移除。
+- 未进行真实串口测试，不声明外部装配兼容。
+
+## 6. 三文件重构时的验证记录
+
+- 精确文件检查通过：一个 47 行私有头、一个 149 行 cpp、一个 34 行公共 Sbus.hpp，共 230 行代码。
+- 唯一 cpp 通过 ARM 编译器 `-fsyntax-only -Wall -Wextra -Werror` 检查。
+- 只包含 Sbus.hpp 的接收/消费示例通过 ARM 语法检查；非系统头依赖只有 Sbus.hpp 本身。
+- 独立算法模型验证 1024 帧、16384 个通道和 512 个回绕帧；覆盖分块读取、不同帧长、x=1/10、最短载荷访问及对称/非对称 CH12 范围。不是生产函数运行测试。
+- 模块增量构建未通过：上层 Atoms/CMakeLists.txt 引用了当前不存在的 ATOM-04_CAN 和 ATOM-05_Motor_PID，CMake 配置阶段中止，尚未进入本模块编译。
+- 未修改这些外部模块、未进行全量重编译，也未用其他工程掩盖上层配置失败。
+- 范围限定 git diff --check 通过；真实串口、停止等待和目标机运行仍未测试。
+
+## 7. 历史：公共数据再次收缩
+
+- 用户已明确授权：SbusData 只保留 scaled_channels 和 mutex。
+- 删除 raw_channels、online、setOffline 和所有公共状态更新；不新增状态替代它们。
+- 保持一私有头、一 cpp、一公共 Sbus.hpp；串口、解码、缩放、锁保护和接收函数返回契约不变。
+- 本次 ARM 增量构建通过：`[100%] Built target atom_03_sbus`，只构建模块，没有进行全量重编译或最终程序构建。
+- ARM 严格语法检查通过：`-fsyntax-only -Wall -Wextra -Werror`。
+- Public-only 编译期契约检查通过：结构化绑定确认恰好两个成员；raw_channels/online 不存在；const SbusData& 可以持锁复制；ReceiveSbus 参数与返回类型保持不变。
+- 删除符号检查、三文件边界检查和范围限定 git diff --check 通过。
+- 映射与组帧算法本轮未改动；未进行真实串口或多线程压力运行测试，也未迁移外部代码。
+
+## 8. 按用户决定恢复 online
+
+- 公共数据字段固定为 mutex、scaled_channels、online；raw_channels 仍只保存在接收局部数组中。
+- 恢复 setOffline 内部辅助函数；有效帧的数组和 online 在同一把锁内更新，所有异常/退出只清 online、不清数组。
+- 不增加文件、生命周期或统计功能，不修改接收函数签名和数值映射。
+- 本次 ARM 模块增量构建通过：`[100%] Built target atom_03_sbus`，未进行全量重编译或最终程序构建。
+- ARM 严格语法与 Public-only 契约检查通过：恰好 mutex/scaled_channels/online 三个成员，不公开 raw_channels，const 消费者可持锁同时复制数组和在线状态。
+- ReceiveSbus 签名、三文件边界及范围限定 git diff --check 检查通过；未进行真实串口或并发压力运行测试。
+
+## 9. CH7/CH13 统一缩放
+
+- 用户确认废弃旧 CH7 确认规则，CH7/CH13 均直接发布 `(raw-center)*x`；不添加计数器、动作执行或新的公共字段。
+- 解码循环已覆盖这两个通道且算法相同，补充源码和公共头用途说明，不增加重复分支。
+- 同步 Config、Interface、ConfigSchema、机器 Schema 和 ATOM3 接入说明；CH12 专用映射保持不变，保留通道改为 CH14～CH16。
+- 文档版本为 Config 1.6、Interface 1.9、ConfigSchema 1.11、ATOM3ConnectProject 1.4；保留原有其他版本记录，不回退已有修订。
+- ARM 模块增量构建与严格语法检查通过；Public-only 消费示例确认公共结构仍只有 mutex/scaled_channels/online，可持锁读取 CH7/CH13。
+- 机器 Schema 的 11 个正反例通过，验证 CH7/CH13 正确绑定、错绑/空值/漏填/重复错误绑定拒绝；未增加必填功能条目，原有 SWITCH/JOYSTICK 输入标签保持兼容。
+- 独立算法模型验证 720 帧、2160 个 CH7/CH13/CH12 结果及 360 个回绕帧；覆盖 x=1～10、两种标定、两个帧长和 CH7/CH13 独立的低/中/高组合。此项是模型检查，不是生产函数或真实串口运行测试。
+- 未增加源码文件、计数器、执行器调用或公共字段；未迁移其他模块与运行配置文件。

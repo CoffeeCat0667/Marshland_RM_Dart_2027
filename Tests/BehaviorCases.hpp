@@ -119,7 +119,8 @@ void TestRuntimeUnknownException()
 void TestRuntimeEmptyAndDestructor()
 {
     RuntimeCoordinator empty;
-    Check(empty.start().succeeded() && empty.stepResults().empty(), "runtime empty baseline, app must guard");
+    const auto result = empty.start();
+    Check(result.succeeded() && result.steps.empty(), "runtime empty baseline, app must guard");
     RuntimeCoordinator never_started;
     never_started.shutdown();
     Check(never_started.state() == RuntimeState::Stopped, "shutdown before start");

@@ -1,5 +1,14 @@
 # ATOM-02 State Arbitration 实现计划
 
+## 当前修订（2026-10-17）
+
+用户已明确豁免本次 ATOM-02 修改并授权设计同步。当前模块收敛为 CH5 控制源
+选择器，接口仅保留 control_source / updateControlSource；旧状态、输入上报、
+急停、发射授权和自动流程推进均删除，不移交逻辑。Entry 主线程每 20 ms 更新。
+当前接入见 `Rule/ATOM02ConnectProject.md`，验证见 `Tests/README.md`。
+
+以下章节保留为旧版实现历史，不再定义当前模块 API、验收或已实现能力。
+
 ## 0. 文档定位与权威来源
 
 | 项目 | 内容 |
@@ -67,7 +76,6 @@ enum AutoFireState {
 - **ControlIntent**：控制源标识（`SBUS`/`WEB`/`AUTO`）、意图类别、请求标识（Interface §9.2 要求 WEB 请求必须携带请求标识与控制源标识）。
 - **StateTransitionResult**：是否接受、原状态、目标状态、拒绝原因。非法切换不改变状态。
 - **StateEvent**：原状态、新状态、原因、时间戳（Interface §7.2 第 6 条要求每次迁移可查询且有原因）。
-- **ControlSourceChange**：原控制源、新控制源、抢占原因（ATOM-02 设计文档原子操作 13）。
 - **FireAuthorization**：是否允许、按 `SBUS > WEB > AUTO` 得出的授权源、阻断原因（急停 / 停止发射 / 故障 / 未授权 / YAW 未到位）。
 - **AutoFireTermination**：SBUS 接管后「允许当前硬件动作组完成，然后终止原自动流程」，不提供暂停/恢复入口，`AUTO_TERMINATED` 之后不得续跑。
 

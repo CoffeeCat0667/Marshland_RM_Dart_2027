@@ -118,7 +118,6 @@
         "can_io_period_ms": { "type": "integer", "minimum": 1 },
         "gpio_sample_period_ms": { "type": "integer", "minimum": 1 },
         "sbus_receive_period_ms": { "type": "integer", "minimum": 1 },
-        "websocket_push_period_ms": { "type": "integer", "minimum": 1 },
         "estop_response_max_ms": { "type": "integer", "minimum": 1 },
         "zero_torque_send_period_ms": { "type": "integer", "minimum": 1 },
         "reload_lift_run_s": {
@@ -151,7 +150,6 @@
           "description": "CAN 通信超时（毫秒）。必需，200 为初始值而非缺失回填；允许 WEB 在 MANUAL/DEBUG 模式热修改。ATOM-15 不实现超时后的 CAN/系统行为。"
         },
         "iic_comm_timeout_ms": { "type": "integer", "minimum": 1 },
-        "http_request_timeout_ms": { "type": "integer", "minimum": 1 },
         "websocket_io_timeout_ms": { "type": "integer", "minimum": 1 },
         "vision_status_update_timeout_ms": { "type": "integer", "minimum": 1 },
         "vision_no_response_timeout_ms": { "type": "integer", "minimum": 1, "description": "30s 视觉无响应超时" },
@@ -435,7 +433,7 @@
         "priority": { "enum": ["SBUS_GT_WEB_GT_AUTO"] },
         "functions": {
           "type": "array",
-          "description": "功能映射（Design/Config.md §7.1）。标记 [待定] 的 channel 必须为 null。",
+          "description": "功能映射（Design/Config.md §7.1）。manual_fire 固定 CH7、manual_feed 固定 CH13，两者均使用 (raw-center)*x，不进行持续帧数确认；CH14～CH16 保留。标记 [待定] 的 channel 必须为 null。",
           "contains": {
             "type": "object",
             "required": ["name", "channel"],
@@ -493,11 +491,33 @@
                 "pattern": "^CH([1-9]|1[0-6])$",
                 "description": "[待定] 通道必须为 null，消费方禁止推断"
               },
-              "signal_type": { "enum": ["SWITCH", "JOYSTICK"] },
+              "signal_type": { "enum": ["SWITCH", "JOYSTICK"], "description": "输入类型标签；CH7/CH13 均按通用公式缩放，标签不改变算法，也不引入确认计数。" },
               "valid_range": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
               "neutral": { "type": "integer" },
               "loss_behavior": { "enum": ["DEGRADE_TO_WEB"] }
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "required": ["name"],
+                  "properties": { "name": { "const": "manual_fire" } }
+                },
+                "then": {
+                  "required": ["channel"],
+                  "properties": { "channel": { "const": "CH7" } }
+                }
+              },
+              {
+                "if": {
+                  "required": ["name"],
+                  "properties": { "name": { "const": "manual_feed" } }
+                },
+                "then": {
+                  "required": ["channel"],
+                  "properties": { "channel": { "const": "CH13" } }
+                }
+              }
+            ]
           }
         },
         "rules": {

@@ -85,9 +85,9 @@
 - `CanTypes.hpp` 已编译期固化槽位映射：`reload_right = 0x203`、`reload_left = 0x204`（`dart_control.json` motor id 3/4 与 static_assert 一致，换弹映射待定项关闭）。
 - `ICanSafetyNotifier` / `ICanEventSink` / `ICanNodeStatusReader`：CAN 侧事件与节点状态入口已存在，装配层可绑定到本模块。
 
-### 6.2 已由本目录窄接口覆盖（2026-10-15 用户裁决）
+### 6.2 窄接口裁决记录（代码已删除，裁决保留）
 
-`Inc/SafetyRecoveryPorts.hpp` 声明：`ISafetyTorqueGate`（对应 Public 注释引用但未落地的 ICanTorqueGate）、`IRecoveryActions`（蓄力回零/恢复发射/换弹抬起/撤销）、`ILimitSwitchReader`、`IMotorFeedbackReader`、`IFaultEventSink`。装配层后续把 ATOM-04/05/10/11 与诊断/WEB 适配到这些端口。
+2026-10-15 用户裁决：Public 未落地的端口由本目录先行声明窄接口。据此曾声明 `ISafetyTorqueGate`、`IRecoveryActions`、`ILimitSwitchReader`、`IMotorFeedbackReader`、`IFaultEventSink`；**2026-10-16 实现代码已应用户要求全部删除**，若重新实现，此裁决仍然有效。
 
 ### 6.3 遗留待确认（已全部裁决，2026-10-15）
 
@@ -109,11 +109,9 @@
 
 ## 8. 当前状态
 
-- 目录现有：`CMakeLists.txt`（模块模板，已链接 `Marshland::PublicHeaders`）、`Guide.md`（0.3）、`PLAN.md`（本文件）、`Inc/`（SafetyRecoveryTypes.hpp、SafetyRecoveryPorts.hpp、SafetyRecoveryFaultCatalog.hpp、SafetyRecovery.hpp）、`Src/`（SafetyRecovery.cpp）。
-- 2026-10-15 上午：按例外授权读取上层根 `PLAN.md` 并重写本计划，修正职责定位（本目录负责实现 ATOM-14），同步公共端口落地现状。
-- 2026-10-15 阶段 0+1（已获授权）：完成 Public 端口核对（结论见 §6）；换弹映射经 `Config/dart_control.json` 确认为 0x203/0x204；创建 Inc/Src 骨架与本目录窄端口声明；CMake 补链 `Marshland::PublicHeaders`。
-- 2026-10-15 阶段 2~5（已获授权）：修复 `Design/Config.md` §14.2 `F-YAW-001` 残缺行（警告级/不自动恢复/不需人工确认）；落地故障码常量目录（23 项）；实现故障管理（活动表 + 1000 条环形历史最新优先 + UTC/单调双时间基准 + 事件发布 + 等级归约上报）、安全闸门（`isOrdinaryCommandAllowed`）、急停锁定/确认/解除编排（两步分离、再次急停回锁定、F-RELOAD-002 FAULT 锁定不重试）、一般故障恢复状态机（回零→三次发射→换弹抬起→MANUAL）、分阶段力矩门控调度与 CAN 事件接入。
-- 验证：WSL `aarch64-linux-gnu-g++ -std=c++23 -Wall -Wextra -Wpedantic -fsyntax-only` 通过，零警告。尚未做全工程增量构建与链接（窄端口需装配层绑定实现后方可链接入整机目标）。
-- 遗留：`CanEvent` 的 NODE_STATE_CHANGE 不携带目标状态，当前按离线/异常登记，在线恢复由 `IMotorFeedbackReader` 查询确认；如需精确区分需上层扩展事件类型。
-- 2026-10-15：应用户要求编写 `Rule/ATOM14ConnectProject.md`（装配层接线指南：端口注入、入向/出向接线、窄端口适配器语义、并发约束、启动顺序、验收清单）。
-- 下一步：装配层按 `Rule/ATOM14ConnectProject.md` 绑定窄端口（`ISafetyTorqueGate`/`IRecoveryActions`/`ILimitSwitchReader`/`IMotorFeedbackReader`/`IFaultEventSink`）后进行整机增量构建与阶段 6 集成校验。
+- 目录现有：`AGENTS.md`、`CMakeLists.txt`（原始模块模板）、`Guide.md`（0.3）、`PLAN.md`（本文件）。无 `Inc/`、`Src/`。
+- 2026-10-15：完成端口核对与阶段 1~5 实现（故障管理、安全闸门、急停编排、一般恢复编排、窄端口声明），ARM 交叉编译语法验证零警告；修复 `Design/Config.md` §14.2 `F-YAW-001` 残缺行；编写 `Rule/ATOM14ConnectProject.md` 接线指南。
+- **2026-10-16：应用户明确要求，删除本目录全部 ATOM-14 实现代码（`Inc/` 4 个头文件、`Src/SafetyRecovery.cpp`），还原 `CMakeLists.txt` 的 `Marshland::PublicHeaders` 链接块，并删除 `Rule/ATOM14ConnectProject.md`。** 公共头中不存在 ATOM-14 编写的代码（仅有其他模块契约中的注释引用，归各自模块所有，未动）；`Atoms/Public/IFaultRegistry.hpp` 归属 ATOM-18，未动。
+- 保留未删：`Guide.md`、本计划；`Design/Config.md` 的 `F-YAW-001` 修复属设计文档缺陷修正，与代码删除无关，保留。
+- 注意：`Atoms/Public/GeneralBugs/` 多份文档（集成可行性报告、AllBugs 等）仍引用已删除的实现，归对应负责人维护，本目录不处理。
+- 下一步：等待用户指示。

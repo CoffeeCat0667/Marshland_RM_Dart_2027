@@ -238,14 +238,14 @@ if(MARSHLAND_BUILD_TESTS)
     target_compile_options(marshland_atom15_tests PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
 
-    # ATOM-04 CAN tests
-    add_executable(marshland_atom04_tests Tests/Atom04CanTests.cpp)
-    target_include_directories(marshland_atom04_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(marshland_atom04_tests PRIVATE
-        Marshland::atom_04_can
-        Marshland::PublicHeaders)
-    target_compile_options(marshland_atom04_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+    # ATOM-04 CAN tests —— 已注销（2026-10-16）。
+    # 模块按用户裁决收缩为「一个阻塞接收线程 + 一个发送 API」，
+    # CanCore / CanRuntimeConfig / LifecycleAdapter / ICanTransport 公开面已删除；
+    # Tests/Atom04CanTests.cpp 仍 include atom04_can/can_core.hpp 与 can_config.hpp，
+    # 无法编译，故不再注册该目标与 can.* 用例。
+    # 依赖面：无（Entry.cpp 与 Atoms 其余模块都不消费本模块）。
+    # 残留：该测试源文件本身尚未清理，是否裁剪为仅覆盖保留的 motor_frame_codec
+    #       用例待用户裁决。详见 Atoms/ATOM-04_CAN_Motor_Control/PLAN.md §5。
 
     # Integration tests (Entry + all ATOMs)
     add_executable(marshland_integration_tests Tests/IntegrationTests.cpp)
@@ -326,17 +326,7 @@ if(MARSHLAND_BUILD_TESTS)
         config.store_thread_safety
         config.store_schema_version)
 
-    # ATOM-04 CAN test cases
-    set(MARSHLAND_ATOM04_CASES
-        can.slot_contract
-        can.big_endian_codec
-        can.control_frame
-        can.zero_torque_frame
-        can.receive_validation
-        can.node_state_transitions
-        can.snapshot_semantics
-        can.config_validation
-        can.torque_output_gating)
+    # ATOM-04 CAN test cases —— 已随 marshland_atom04_tests 一并移除（见上）。
 
     # Integration test cases
     set(MARSHLAND_INTEGRATION_CASES
@@ -371,14 +361,6 @@ if(MARSHLAND_BUILD_TESTS)
                             $<TARGET_FILE:marshland_atom15_tests> "${case_name}")
             endforeach()
 
-            foreach(case_name IN LISTS MARSHLAND_ATOM04_CASES)
-                add_test(NAME "marshland.${case_name}"
-                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
-                            $<TARGET_FILE:marshland_atom04_tests> "${case_name}")
-            endforeach()
-
-
-
         foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
                 add_test(NAME "marshland.${case_name}"
                     COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
@@ -400,17 +382,13 @@ if(MARSHLAND_BUILD_TESTS)
             add_test(NAME "marshland.${case_name}" COMMAND marshland_atom15_tests "${case_name}")
         endforeach()
 
-        foreach(case_name IN LISTS MARSHLAND_ATOM04_CASES)
-            add_test(NAME "marshland.${case_name}" COMMAND marshland_atom04_tests "${case_name}")
-        endforeach()
-
         foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
             add_test(NAME "marshland.${case_name}" COMMAND marshland_integration_tests "${case_name}")
         endforeach()
     endif()
 
     # Set timeout for all tests
-    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES MARSHLAND_ATOM03_CASES MARSHLAND_ATOM15_CASES MARSHLAND_ATOM04_CASES MARSHLAND_INTEGRATION_CASES)
+    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES MARSHLAND_ATOM03_CASES MARSHLAND_ATOM15_CASES MARSHLAND_INTEGRATION_CASES)
         if(TEST "marshland.${case_name}")
             set_tests_properties("marshland.${case_name}" PROPERTIES TIMEOUT 30)
         endif()

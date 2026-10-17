@@ -47,8 +47,8 @@
           <div class="stat-value ok" id="inited">已完成</div>
         </div>
         <div class="stat">
-          <label>停止发射</label>
-          <div class="stat-value warn" id="stopFire">已置位</div>
+          <label>急停状态</label>
+          <div class="stat-value warn" id="stopFire">--</div>
         </div>
       </div>
     </section>
@@ -126,28 +126,17 @@
       <p class="joy-note">摇杆纵向偏移量 → 速度值为<b>线性映射</b>：value = offset / radius × max；满偏 = ±5000 rpm。当前为演示模式，未接入真实控制接口。</p>
     </section>
 
-    <!-- 机构状态 -->
-    <section class="card">
-      <div class="card-title">机构状态<em>MECH</em></div>
-      <ul class="mech-list">
-        <li><span>蓄力</span><em class="pill ok">就绪</em></li>
-        <li><span>变力</span><em class="pill ok">0 rpm</em></li>
-        <li><span>换弹</span><em class="pill idle">下限位</em></li>
-        <li><span>供弹</span><em class="pill idle">待命</em></li>
-        <li><span>YAW</span><em class="pill warn">未到位</em></li>
-      </ul>
-    </section>
-
-    <!-- 链路状态 -->
-    <section class="card">
-      <div class="card-title">链路状态<em>LINK</em></div>
-      <ul class="mech-list">
-        <li><span>CAN 总线</span><em class="pill ok">在线</em></li>
-        <li><span>SBUS</span><em class="pill err">失联</em></li>
-        <li><span>视觉</span><em class="pill ok">在线</em></li>
-        <li><span>IIC / PCA9685</span><em class="pill ok">在线</em></li>
-        <li><span>活动故障</span><em class="pill ok">0</em></li>
-      </ul>
+    <!-- 电机状态（实时：转速 / 温度） -->
+    <section class="card span-2">
+      <div class="card-title">电机状态<em>MOTORS · LIVE</em></div>
+      <div class="motor-grid" id="motorGrid">
+        <div class="motor" data-i="0"><label>蓄力右 0x201</label><div class="m-rpm">--</div><div class="m-meta"><span class="m-temp">-- ℃</span><span class="m-dot"></span></div></div>
+        <div class="motor" data-i="1"><label>蓄力左 0x202</label><div class="m-rpm">--</div><div class="m-meta"><span class="m-temp">-- ℃</span><span class="m-dot"></span></div></div>
+        <div class="motor" data-i="2"><label>换弹右 0x203</label><div class="m-rpm">--</div><div class="m-meta"><span class="m-temp">-- ℃</span><span class="m-dot"></span></div></div>
+        <div class="motor" data-i="3"><label>换弹左 0x204</label><div class="m-rpm">--</div><div class="m-meta"><span class="m-temp">-- ℃</span><span class="m-dot"></span></div></div>
+        <div class="motor" data-i="4"><label>YAW 0x205</label><div class="m-rpm">--</div><div class="m-meta"><span class="m-temp">-- ℃</span><span class="m-dot"></span></div></div>
+        <div class="motor" data-i="5"><label>变力 0x206</label><div class="m-rpm">--</div><div class="m-meta"><span class="m-temp">-- ℃</span><span class="m-dot"></span></div></div>
+      </div>
     </section>
 
     <!-- 手动控制 -->

@@ -1,205 +1,100 @@
 # ATOM-03_SBUS 工程接入说明
 
-> 版本：1.3
-> 日期：2026-10-14  
-> 适用模块：`Atoms/ATOM-03_SBUS`
+> 版本：1.4
+> 日期：2026-10-16
+> 当前实现：一个私有头、一个 cpp、公共 `Atoms/Public/Sbus.hpp`。
 
 ## 1. 接入目标
 
-ATOM-03 负责配置指定串口设备上的 SBUS 接收、25 字节组帧、帧有效性判断、CH1～CH16 解码和公共通道快照维护。输入已经过硬件电平反转，软件不再做反相。
-
-模块不直接驱动电机、舵机或其他执行器，也不在模块内部实现 `main()`。控制权最终仲裁、安全恢复和机构动作由上层装配及相应模块负责。
+只做串口读取、环形组帧、16 通道解码、数值缩放和公共数据写入。不执行供弹/发射动作，不解释控制权和急停，不实现持续帧数确认。
 
 ## 2. CMake 接入方向
 
-```text
-Marshland executable
-  -> Atoms/Public/AppCoordinator（顶层装配）
-  -> Marshland::atom_03_sbus
-  -> Marshland::PublicHeaders
-```
-
-要求：
-
-1. 上层工程先建立 `Atoms/Public` 的 `Marshland::PublicHeaders`。
-2. 上层工程通过 `add_subdirectory(Atoms/ATOM-03_SBUS)` 加入本模块。
-3. ATOM-03 提供目标 `atom_03_sbus` 和别名 `Marshland::atom_03_sbus`。
-4. ATOM-03 依赖 `Marshland::PublicHeaders`、C++ 标准库和目标 Ubuntu ARM 的 POSIX/Linux 串口接口。
-5. 上层工程负责决定 ARM 工具链、C++ 标准、警告选项和最终可执行文件。
-6. 本模块不定义 `project()`，不创建可执行文件，不设置全局编译选项。
+上层先建立公共头目标，再加入 ATOM-03，链接 `Marshland::atom_03_sbus`；线程依赖由主程序按需链接 `Threads::Threads`。编译工具链与选项由上层决定，目标为 Ubuntu ARM，不定义 main 或独立可执行目标。
 
 ## 3. 公共契约
 
-`Atoms/Public` 新增：
+只包含 `Sbus.hpp`：
 
-- `SbusTypes.hpp`
-  - `SbusChannelSnapshot`：16 通道原始值、统一缩放值、CH5 控制源、CH6 急停状态、CH7 20 帧确认状态、帧有效性、在线状态、**帧序号（`frame_sequence`，每接收一个有效帧递增，供诊断与消费方判断快照新鲜度）**和最近有效帧时间；
-  - `SbusChannelStore`：使用互斥锁保护完整快照替换和复制读取。
-- `SbusInterfaces.hpp`
-  - `IUartByteStream`：UART 参数配置、批量字节读取和 `cancel()`；
-  - `ISbusSnapshotReader`：公共快照读取端口。
+- SbusData：mutex、scaled_channels、online；原始值不公开。
+- ReceiveSbus：阻塞接收函数，参数直接传入，调用方负责线程和停止标志。
 
-公共头文件不包含 `AppCoordinator.hpp`、ATOM-02 私有头或其他 ATOM 私有头。
+旧 SbusTypes/SbusInterfaces、SbusChannelSnapshot/Store、虚拟读取器、生命周期适配器和帧计数状态均已移除。本文以下约定覆盖旧版本的接入结构与确认规则。
 
-## 4. 装配对象图
+## 4. 数据所有权
 
-由 `Entry.cpp` 或等价顶层装配代码创建并持有以下对象，创建顺序必须保证依赖对象寿命更长：
+主程序创建一个 SbusData，接收线程为唯一写入方，消费模块接收同一个对象的 const 引用。读写都持有该对象的 mutex；消费者在锁内同时复制 scaled_channels 和 online，解锁后使用副本。不得持有数据锁等待接收线程结束。
 
-```text
-IConfigView 实现
-IMonotonicClock 实现
-LinuxSbusByteStream 的配置指定串口实现
-SbusChannelStore
-SbusCore(IUartByteStream&, IMonotonicClock&, SbusChannelStore&)
-LifecycleAdapter(SbusCore&, IConfigView&)
-```
+## 5. 独立线程接入
 
-本模块提供 `LinuxSbusByteStream` 作为 `IUartByteStream` 的 Linux 实现；装配层应创建该对象并将其引用传给 `SbusCore`。
+在线程中调用 ReceiveSbus；模块本身不创建线程，也不读取 IConfigView 或 RuntimeContext。停止时将共享的 atomic<bool> 标志设为 true，再等待调用线程结束。
 
-`LifecycleAdapter` 只持有 `SbusCore` 和 `IConfigView` 的引用；装配层必须保证 `SbusCore`、UART、时钟、配置视图和快照存储的寿命长于适配器。
+- 接收函数在 poll 返回或当前数据批次处理后检查停止标志。
+- 默认 poll 等待上限 20 ms，实际退出还受调度和锁等待影响。
+- 正常请求停止返回 true；参数、打开、配置及永久设备错误返回 false。
+- 函数退出关闭串口，不自动重试或重开。
 
-## 5. 生命周期注册
+## 6. 参数
 
-上层装配层将 `LifecycleAdapter` 注册到：
+| 参数 | 含义 |
+|---|---|
+| serial_device | 可变设备路径，不固定 UART10 |
+| data | 共享的 SbusData |
+| stop_requested | 调用方持有的原子停止标志 |
+| channel_scale_x | 通用缩放系数，uint8_t，1～10 |
+| frame_bytes | 配置帧长，不校验为固定帧长 |
+| channel_center | 通道中点 |
+| channel_minimum / channel_maximum | 原始通道有效边界 |
+| read_timeout_ms | poll 无数据等待上限，默认 20 ms |
 
-```text
-RuntimeStep::InitializeSbusAndVision
-```
+minimum<center<maximum 和最短通道载荷是运算/内存安全边界，不要求标定值等于固定常量。推荐标定为 364/1024/1684。
 
-注册时必须：
+## 7. 串口与状态
 
-- 显式填写 `required`；
-- 检查 `addModule()` 返回值；
-- 失败时读取 `lastRegistrationError()`；
-- 不在 ATOM-03 内自行注册；
-- 不把模块初始化结果伪装为注册信息。
+串口格式固定 100000 baud、8E2，原始模式、无流控；电平反转由硬件完成。按传入帧长和 0x0F 帧头组帧，不校验帧尾，不解析 Byte 23 标志。
 
-本阶段不规定 `required` 的最终值，由系统启动策略决定 SBUS 是否属于必需输入链路。
-
-## 6. 配置接入
-
-配置通过装配层注入的 `marshland::config::IConfigView` 查询，不由 ATOM-03 打开或解析 JSON。
-UART 设备名由 `RuntimeContext::values` 传入；波特率、数据位、奇偶校验和停止位在 Linux UART 实现内固定为 `100000 baud, 8E2`。
-
-RuntimeContext 参数键：
-
-| 键 | 类型/允许值 | 用途 |
-|---|---|---|
-| `sbus.serial_device` | 非空字符串，例如 `/dev/ttyS10` | 实际串口设备路径 |
-
-Linux UART 固定串口格式：
-
-```text
-100000 baud, 8 data bits, even parity, 2 stop bits (8E2)
-```
-
-本模块读取：
-
-| 键 | 类型/范围 | 用途 |
-|---|---|---|
-| `sbus.channel_scale_x` | `uint8_t`，1～10 | 所有连续通道统一缩放 |
-| `timing.sbus_receive_period_ms` | 正整数 | SBUS 接收周期配置 |
-| `timing.sbus_loss_timeout_ms` | 正整数 | 失联阈值 |
-| `sbus.frame_bytes` | 固定 25 | 帧长度 |
-| `sbus.joystick_center` | 固定 1024 | 连续量中心 |
-| `sbus.valid_min` | 固定 364 | 通道有效下限 |
-| `sbus.valid_max` | 固定 1684 | 通道有效上限 |
-
-缺失、类型错误或越界配置必须使生命周期初始化失败。
-
-## 7. 数据和线程流
-
-```text
-配置指定的串口设备
-  -> LinuxSbusByteStream::configure(RuntimeContext::values["sbus.serial_device"])
-  -> IUartByteStream::read() 批量读取
-  -> ATOM-03 有限容量环形缓冲区
-  -> 持续消费缓冲区，避免 UART 数据无限积压
-  -> SbusCore 独立读取线程
-  -> 25 字节组帧
-  -> SbusDecoder
-  -> 局部完整快照
-  -> SbusChannelStore 互斥替换
-  -> 其他模块复制读取快照
-```
-
-线程停止流程：
-
-```text
-LifecycleAdapter::shutdown()
-  -> SbusCore::stop()
-  -> IUartByteStream::cancel()
-  -> worker.join()
-```
-
-UART 后端必须保证 `cancel()` 能打断阻塞读取。
+有效整帧在同一次加锁中更新数组和 online=true。进入接收、无数据超时、无效数据、异常和退出令 online=false，保留上次数组。online 不是独立帧龄看门狗或动作授权。
 
 ## 8. 通道规则
 
-- CH1：空；
-- CH2：蓄力机构速度；
-- CH3：换弹机构速度；
-- CH4：YAW 电机速度；
-- CH5：364=AUTO、1024=WEB、1684=SBUS；
-- CH6：`raw - 1024 > 0` 为正常，`< 0` 为急停，0 为中点；
-- CH7：原始值 364 连续 20 个有效帧确认发射请求，中途其他有效值清零计数；
-- CH8：蓄力机构左电机速度；
-- CH9：蓄力机构右电机速度；
-- CH10：换弹机构左电机速度；
-- CH11：换弹机构右电机速度；
-- CH12：变力机构速度（**变力机构手动目标来源**，对应 `force.target_default_source = SBUS_CH12`），线性映射为 `-2000～+2000 rpm`；`364=-2000 rpm`、`1024=0 rpm`、`1684=+2000 rpm`；
-- CH13～CH16：保留，不映射。
+通道定义以 Design/Config.md §7.1 为准：
 
-连续通道使用：
+| 通道 | 用途 | 公共数组下标 | 数值映射 |
+|---|---|---|---|
+| CH1 | 空 | 0 | 只保留解析数值 |
+| CH2 | 蓄力机构速度 | 1 | 通用缩放 |
+| CH3 | 换弹机构速度 | 2 | 通用缩放 |
+| CH4 | YAW 电机速度 | 3 | 通用缩放 |
+| CH5 | 控制权开关输入 | 4 | 通用缩放，消费方解释 |
+| CH6 | 急停开关输入 | 5 | 通用缩放，消费方解释 |
+| CH7 | 发射输入 | 6 | 通用缩放，无持续帧数确认 |
+| CH8 / CH9 | 蓄力机构左 / 右电机速度 | 7 / 8 | 通用缩放 |
+| CH10 / CH11 | 换弹机构左 / 右电机速度 | 9 / 10 | 通用缩放 |
+| CH12 | 变力机构速度 | 11 | 专用 -2000～+2000 rpm |
+| CH13 | 供弹舵机输入 | 12 | 与 CH7 相同的通用缩放 |
+| CH14～CH16 | 保留 | 13～15 | 只保留解析数值，不映射动作 |
 
-```text
-output = (raw - 1024) * x
-```
+通用缩放为 `(raw-center)*x`。CH7/CH13 分别解析自身通道，不互相复制或联动；推荐 364/1024/1684 对应 -660*x/0/+660*x。原始低位不直接生成请求，也没有确认计数、保持时间或角度/PWM 转换。
 
-CH12 使用独立的变力机构速度映射，不使用通用缩放变量 `x`：
-
-```text
-force_rpm = (raw - 1024) * 2000 / 660
-```
-
-帧尾不参与有效性判断；帧长度、起始字节和通道范围仍参与判断。无效帧不更新公共快照和最近有效帧时间。
-异常统一通过 `online=false` 表示，不增加额外异常状态或统计接口。
-**`SbusChannelSnapshot::frame_sequence` 保留**：每接收一个有效帧递增一次，用于诊断与消费方判断快照新鲜度；
-它**不**构成帧序号**连续性检查**，也不会因序号跳变而使帧失效。
+CH12 不使用 x，以 center 为界分别按负、正量程映射，保证 minimum/center/maximum 对应 -2000/0/+2000 rpm。
 
 ## 9. 控制和安全边界
 
-ATOM-03 只在快照中保存 CH5～CH7 的结果：
-
-- 不直接调用执行器；
-- 不直接包含 `AppCoordinator.hpp`；
-- 不直接调用 `StateArbitrator::UpdateInputs()` 或字段 setter；
-- 后续若需上报输入或提交意图，必须通过 Public 窄端口，由装配层绑定到 `AppCoordinator`、ATOM-02 或 SafetyManager；
-- 失联后普通 SBUS 控制失效并降级 WEB；
-- 断连/重连不解除急停锁定；
-- 重连不恢复已终止的自动发射流程。
+scaled_channels 是输入数值，不是执行器命令。供弹、发射、控制权、急停及动作授权仍由上层模块按既有安全链路处理。本次不修改供弹硬件、角度配置或动作时序，不迁移外部调用代码。
 
 ## 10. 验证责任
 
-本模块静态验证至少包括：
-
-- Public 依赖方向和头文件边界；
-- 25 字节组帧且不校验帧尾；
-- 通道范围和位打包解码；
-- 局部快照加互斥替换；
-- CH5/CH6/CH7 规则；
-- CH7 20 帧确认与清零；
-- 失联计时和 WEB 降级；
-- `cancel()`、线程 join 和幂等 shutdown；
-- 无 `main()`、无独立可执行目标；
-- CMake 目标和别名命名。
+- ARM 增量构建、严格语法检查和三个代码文件边界。
+- 帧头、可配置长度、通道有效范围、整帧锁保护和 online 更新。
+- CH7/CH13 共用公式、独立通道输入和 x=1～10 的边界；无持续帧数确认。
+- Schema 中 manual_fire=CH7、manual_feed=CH13 的绑定；CH14～CH16 仍保留。
+- 目标机与真实串口验证由实际接入环境执行，模型或语法检查不能替代运行测试。
 
 ## 11. 版本记录
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| 1.1 | 2026-10-11 | 串口设备改为由 `RuntimeContext::values["sbus.serial_device"]` 传入，`100000 8E2` 固定在 Linux UART 实现内；补充 `LinuxSbusByteStream` 装配说明。 |
-| 1.2 | 2026-10-11 | 明确 `SbusChannelSnapshot::frame_sequence` **保留**（每有效帧递增，供诊断与快照新鲜度判断），并澄清它不构成帧序号连续性检查；§8 的"不增加…帧序号连续性检查或统计接口"措辞随之修正。同步 `Design/Config.md` §7.1 通道表以本文件为准（CH12 为已映射的变力通道、CH13～CH16 保留、CH2/CH3 不区分左右电机）。 |
-| 1.3 | 2026-10-14 | **统一 SBUS 变力通道标准**：§8 明确 CH12 即变力机构手动目标来源，对应 `force.target_default_source = SBUS_CH12`；通道规则本身不变（CH13～CH16 保留、专用映射不使用通用 `x`）。同步 `Design/Config.md` 1.3、`Design/Interface.md` 1.7、`Rule/ConfigSchema.md` 1.6。 |
-
-本阶段按用户要求不执行编译。
+| 1.1 | 2026-10-11 | 旧接入结构中设备路径可配置、串口格式固定；该结构已由当前三文件实现替代。 |
+| 1.2 | 2026-10-11 | 旧版公共快照曾包含帧序号；现行最小接口不再公开。 |
+| 1.3 | 2026-10-14 | 统一 CH12 变力专用映射及相关配置来源；保留通道范围现以 1.4 为准。 |
+| 1.4 | 2026-10-16 | 同步当前三文件接入；CH7/CH13 均通用缩放、无持续帧数确认，CH13 为供弹舵机输入，仅 CH14～CH16 保留。 |

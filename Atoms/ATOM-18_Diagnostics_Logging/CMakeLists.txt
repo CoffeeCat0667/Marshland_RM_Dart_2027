@@ -1,13 +1,15 @@
 # ============================================================================
-# ATOM-18_Diagnostics_Logging — 故障诊断与日志
+# ATOM-18_Diagnostics_Logging — 日志系统（唯二对外接口：Public/Log.hpp）
 #
-# 统一模块契约（与上层 NewVersion/CMakeLists.txt 保持一致）：
-#   1. 由上层工程通过 add_subdirectory() 组装；本文件不定义 project()。
-#   2. 不产生可执行文件，不定义 main()。
-#   3. 不设置编译器、目标平台、C++ 标准与编译选项，全部由上层工程决定。
-#   4. 公开头文件放 Inc/，实现源码放 Src/；header-only 模块头文件直接放本目录。
-#   5. 有 Src/ 源码时建 STATIC 库，否则建 INTERFACE 库；上层统一使用
-#      Marshland::<目标名> 链接。
+# 2026-10-16 用户裁决（见 PLAN.md §0）：
+#   * 对外接口收敛为两个函数：marshland::log::Init / marshland::log::Log
+#     （声明在 ../Public/Log.hpp，已注册进 Marshland::PublicHeaders）；
+#   * 不再依赖装配层或其他 ATOM 的任何公开接口（无 IConfigView /
+#     IMonotonicClock / ILifecycle 注入，配置为模块内编译期常量）；
+#   * 无第三方依赖、无后台线程；日志实现全部在 Src/，Inc/ 不再含私有头。
+#
+# 仍与上层约定一致：由上层 add_subdirectory() 组装；不定义 project()/main()；
+# 不设置编译器、目标平台与 C++ 标准；STATIC 库，别名 Marshland::<目标名>。
 # ============================================================================
 
 set(ATOM_MODULE_TARGET atom_18_diagnostics_logging)
@@ -17,53 +19,22 @@ if(TARGET ${ATOM_MODULE_TARGET})
     return()
 endif()
 
-# 公开包含目录：本目录(header-only 布局) / Inc/ / 同级共享 Public/
-set(ATOM_MODULE_INCLUDE_DIRS "")
-foreach(ATOM_MODULE_INC
-        "${ATOM_MODULE_DIR}"
-        "${ATOM_MODULE_DIR}/Inc"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Public")
-    if(IS_DIRECTORY "${ATOM_MODULE_INC}")
-        list(APPEND ATOM_MODULE_INCLUDE_DIRS "$<BUILD_INTERFACE:${ATOM_MODULE_INC}>")
-    endif()
-endforeach()
-
-# 源码与头文件；CONFIGURE_DEPENDS 使新增文件在下一次 configure 时自动生效
+# CONFIGURE_DEPENDS 使新增文件在下一次 configure 时自动生效
 file(GLOB_RECURSE ATOM_MODULE_SOURCES CONFIGURE_DEPENDS
-    "${ATOM_MODULE_DIR}/Src/*.c" "${ATOM_MODULE_DIR}/Src/*.cc"
-    "${ATOM_MODULE_DIR}/Src/*.cpp" "${ATOM_MODULE_DIR}/Src/*.cxx")
+    "${ATOM_MODULE_DIR}/Src/*.cpp")
 file(GLOB_RECURSE ATOM_MODULE_HEADERS CONFIGURE_DEPENDS
-    "${ATOM_MODULE_DIR}/*.h" "${ATOM_MODULE_DIR}/*.hh" "${ATOM_MODULE_DIR}/*.hpp"
-    "${ATOM_MODULE_DIR}/Inc/*.h" "${ATOM_MODULE_DIR}/Inc/*.hh" "${ATOM_MODULE_DIR}/Inc/*.hpp")
+    "${ATOM_MODULE_DIR}/Inc/*.hpp")
 
-# 有源码 -> STATIC（参与增量编译）；无源码 -> INTERFACE（占位且可正常链接）
-if(ATOM_MODULE_SOURCES)
-    add_library(${ATOM_MODULE_TARGET} STATIC ${ATOM_MODULE_SOURCES} ${ATOM_MODULE_HEADERS})
-    set(ATOM_MODULE_SCOPE PUBLIC)
-else()
-    add_library(${ATOM_MODULE_TARGET} INTERFACE)
-    set(ATOM_MODULE_SCOPE INTERFACE)
-    if(ATOM_MODULE_HEADERS)
-        target_sources(${ATOM_MODULE_TARGET} INTERFACE ${ATOM_MODULE_HEADERS})
-    endif()
-endif()
-
+add_library(${ATOM_MODULE_TARGET} STATIC ${ATOM_MODULE_SOURCES} ${ATOM_MODULE_HEADERS})
 add_library(Marshland::${ATOM_MODULE_TARGET} ALIAS ${ATOM_MODULE_TARGET})
 
-if(ATOM_MODULE_INCLUDE_DIRS)
-    target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
-        ${ATOM_MODULE_INCLUDE_DIRS})
-endif()
+# 本模块私有包含目录（当前为空）+ 公共契约头所在目录（Log.hpp）
+# 包含目录为 PRIVATE：不向其他模块传播本模块内部结构
+target_include_directories(${ATOM_MODULE_TARGET} PRIVATE
+    "$<BUILD_INTERFACE:${ATOM_MODULE_DIR}/Inc>"
+    "$<BUILD_INTERFACE:${ATOM_MODULE_DIR}/../Public>")
 
-# 公共契约头：按上层约定在目标存在时链接 Marshland::PublicHeaders
+# 以公开契约头目标为准建立依赖关系（顶层在 Atoms/ 之前引入 PublicHeaders）
 if(TARGET Marshland::PublicHeaders)
-    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
-        Marshland::PublicHeaders)
-endif()
-
-# nlohmann/json 仅实现侧使用；仅 STATIC（有 Src/ 源码）时 PRIVATE 链接，
-# 避免第三方头经 INTERFACE 泄漏到对外接口
-if(ATOM_MODULE_SOURCES AND TARGET Marshland::ThirdPartyNlohmannJson)
-    target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE
-        Marshland::ThirdPartyNlohmannJson)
+    target_link_libraries(${ATOM_MODULE_TARGET} PRIVATE Marshland::PublicHeaders)
 endif()

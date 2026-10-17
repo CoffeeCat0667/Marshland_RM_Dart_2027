@@ -19,17 +19,17 @@
 
 - 每个功能类 Atom 是一个可独立评审和验收的模块边界。
 - 详细文档中的内部操作为单一输入处理、状态转换、硬件命令、查询或持久化操作。
-- 多步流程由 PEFExecutor/StateMachine 协调，不能将整轮四发或跨机构流程包装成单一硬件原子操作。
+- 多步流程不能包装成单一硬件原子操作；2026-10-17 起 StateMachine 不再协调多步流程。
 - 逻辑状态更新须避免部分提交；硬件 I/O 必须返回明确成功/失败，不承诺多个物理执行器可回滚。
 - 本文件为功能拆分规格，不是源代码。
-- 根目录 `AGENTS.md` 禁止 Agent 实施 `Design/Atomic/` 文档提及的功能；本次仅维护设计文档，不实施代码。
+- 根目录 `AGENTS.md` 的原子模块职责禁令仍有效；用户于 2026-10-17 明确豁免本次 ATOM-02 修改并授权设计同步，不扩大到其他原子模块。
 
 ## 3. 功能类索引
 
 | Atom ID | 功能大类 | 范围摘要 | 详细文档 |
 |---|---|---|---|
 | ATOM-01 | 进程生命周期与启动协调 | 配置读取、模块初始化、待机/失败、关闭 | `Atomic/ATOM-01_Runtime.md` |
-| ATOM-02 | 系统状态机与控制权仲裁 | 状态迁移、控制源选择、SBUS>WEB>AUTO 发射授权 | `Atomic/ATOM-02_State_Arbitration.md` |
+| ATOM-02 | 控制源选择器 | 主动读取 SBUS/Web 在线状态及 CH5；Entry 主线程 20 ms 更新；无状态迁移/急停/发射授权/流程推进 | `Atomic/ATOM-02_State_Arbitration.md` |
 | ATOM-03 | SBUS 遥控输入 | UART10 25 字节 SBUS 帧接收与解析、CH1～CH12 映射（CH12 为变力专用映射）、公共互斥通道快照、自动模式/失联降级和重连 | `Atomic/ATOM-03_SBUS.md` |
 | ATOM-04 | CAN/SocketCAN 传输适配 | CAN 初始化、单帧收发、协议分派、8-byte 零力矩帧 | `Atomic/ATOM-04_CAN.md` |
 | ATOM-05 | 电机、编码器与 PID | 所有电机命令/反馈、编码器、闭环 PID、WEB 授权热加载 | `Atomic/ATOM-05_Motor_PID.md` |

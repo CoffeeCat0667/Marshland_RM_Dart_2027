@@ -17,12 +17,11 @@ if(TARGET ${ATOM_MODULE_TARGET})
     return()
 endif()
 
-# 公开包含目录：本目录(header-only 布局) / Inc/ / 同级共享 Public/
+# 公开包含目录：本目录(header-only 布局) / Inc/
 set(ATOM_MODULE_INCLUDE_DIRS "")
 foreach(ATOM_MODULE_INC
         "${ATOM_MODULE_DIR}"
-        "${ATOM_MODULE_DIR}/Inc"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Public")
+        "${ATOM_MODULE_DIR}/Inc")
     if(IS_DIRECTORY "${ATOM_MODULE_INC}")
         list(APPEND ATOM_MODULE_INCLUDE_DIRS "$<BUILD_INTERFACE:${ATOM_MODULE_INC}>")
     endif()
@@ -70,10 +69,14 @@ else()
         Marshland::ThirdPartyHttplib Marshland::ThirdPartyNlohmannJson)
 endif()
 
-# Public 契约头（MarshlandTypes/ILifecycle/IConfigView/AppInterfaces/...）。
+# 本模块只消费 Public/Headers/Web.hpp（自身对外契约：WebData + RunHttpServer），
+# 不消费其他 Public 接口。
 if(TARGET Marshland::PublicHeaders)
     target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         Marshland::PublicHeaders)
+else()
+    target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
+        "$<BUILD_INTERFACE:${ATOM_MODULE_DIR}/../Public>")
 endif()
 
 # httplib 在 Linux 下需要 pthread；上层工程未统一引入时此处兜底。

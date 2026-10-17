@@ -235,8 +235,11 @@ ATOM-13/14/15/18/19 的 C++ 接口尚未在 Public 定义。当前所有分派�
 
 ## 11. 当前状态
 
-- 模块目标 `atom16_http_web`（STATIC）+ 首批源码（生命周期骨架、配置读取、限界、错误体系、`/api/state`）已落地；前端演示骨架 v3（浅色简约风 + 纵向摇杆 ±5000 rpm）已在浏览器验证。
-- **2026-10-15 全量重读完成**：P0 循环依赖确认已解决（Entry.cpp 构造顺序重排）；四项裁决已记录（§8）；11 项前置阻塞登记于 `Atoms/Public/GeneralBugs/2026-10-15-ATOM16.md`。
-- **仍阻塞（等外部）**：http 配置节（用户补）、`allowed_modes` nested 查询（ATOM-15）、装配层注册与窄接口桥接（Entry.cpp）、ATOM-12/13/19 未实现（`yaw_set`/自动流程执行侧/校准只能 503 桩）。
-- **下一步（可立即开工）**：定义窄接口头文件；实现 `/api/diagnostics`（ATOM-18 三件套）、`/api/control/estop`、`/api/control/auto/stop`（始终可用）、`stop_fire_set/clear`、`force_set`（IForceController）、`GET /api/parameters`（只读）；`ConfigKeys.hpp` 键名修正（`http.http_status_mapping`）；静态资源 mount。
-- **未经编译验证**：首次编译须在 Ubuntu ARM/aarch64 环境进行。
+- **2026-10-16 形态裁决（用户）**：对外契约定格为 `Public/Headers/Web.hpp`——线程安全结构体 `WebData`（16 通道 + online，与 `SbusData` 同构；CH5 仅 AUTO/WEB 无 SBUS 档）+ 线程函数 `int RunHttpServer(HttpServerConfig, WebData&, const std::atomic<bool>&)`（装配层拉线程，停止用 `std::atomic<bool>`，对齐 `ReceiveSbus` 惯例）。已登记进 `Public/Headers/CMakeLists.txt`。
+- **本模块文件**：
+  - `Src/HttpServer.cpp`——实现 `marshland::web::RunHttpServer`：10 条路由外形校验 + 统一错误结构 + 503 桩、413/500 限界、`GET /api/stream` SSE 心跳（连接状态驱动 `WebData.online`）、静态 mount 可空、stop 监听线程；错误码表内置于 cpp（非对外契约）；
+  - `Inc/` 为空（对外契约已上提 Public/Headers/Web.hpp）；
+  - `CMakeLists.txt`：STATIC 库，链接 ThirdParty + Threads + PublicHeaders（仅为 Web.hpp）。
+- **WebData 写入现状**：仅 `online`（SSE 连接驱动）；16 通道写入待摇杆/控制 API 接入。
+- **B7**：仅静态形式化验证；编译验证留给上层 ARM 环境。
+- **仍阻塞**：B3（ATOM-15 nested 查询）、B4/B5/B6（ATOM-12/13/19 无代码）、设计文档 SSE 化修订（B8：代码完成后处理）。

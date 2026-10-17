@@ -389,6 +389,47 @@ body {
 }
 .estop-text p { font-size: 12px; line-height: 2; color: var(--dim); }
 
+/* ---------- 电机状态 ---------- */
+.motor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.motor {
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fbfcfe;
+  transition: opacity 0.3s;
+}
+.motor.offline { opacity: 0.45; }
+.motor label {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+  color: var(--dim);
+  margin-bottom: 4px;
+  font-family: var(--mono);
+}
+.m-rpm {
+  font-family: var(--mono);
+  font-size: 20px; font-weight: 600;
+  color: var(--text);
+}
+.m-rpm::after { content: " rpm"; font-size: 10px; color: var(--dim); }
+.m-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 4px;
+}
+.m-temp { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.m-temp.hot { color: var(--err); font-weight: 600; }
+.m-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #cbd5e1;
+  transition: background 0.3s;
+}
+.m-dot.on { background: var(--ok); animation: blink 2s ease-in-out infinite; }
+
 /* ---------- 底部日志条 ---------- */
 .logbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;

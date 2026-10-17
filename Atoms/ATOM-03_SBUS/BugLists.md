@@ -1,129 +1,36 @@
-# ATOM-03_SBUS 缺陷清单
+# ATOM-03 缺陷与范围记录
 
-- 更新日期：2026-10-13
-- 设计基线：PRD 0.10、PEF 1.5、Interface 1.6、Config 0.9
-- 适用模块：`Atoms/ATOM-03_SBUS`
-- 维护约定：只登记未完成事项；已修复事项从未修复列表移除，并在版本记录中保留摘要。
-- 本文件只记录 ATOM-03 归属的问题。ATOM-15 配置解析/校验问题另见 `Atoms/ATOM-15_Config_Persistence/BugLists.md`。
+- 日期：2026-10-16。
+- 当前基线：一个私有头、一个 cpp、公共 Sbus.hpp。
 
-## 1. 已修复缺陷
-
-| 编号 | 标题 | 严重度 | 状态 |
-|---|---|---|---|
-| ATOM03-BUG-001 | SBUS 快照未接入公共输入、仲裁和安全端口 | P1 | 代码侧已修复，装配接入待确认 |
-| ATOM03-BUG-002 | `receive_period_ms` 未参与读取调度，UART 轮询超时固定为 100 ms | P1 | 已修复 |
-| ATOM03-BUG-003 | UART `read() == false` 后无退避/错误状态，设备异常时可能空转 | P1 | 已修复 |
-| ATOM03-BUG-004 | `frame_bytes` 消费契约不闭合 | P1 | 已修复 |
-
-## 2. 缺陷详述
-
-### ATOM03-BUG-001：SBUS 控制链未接通（代码侧已修复，装配接入待确认）
-
-**位置**：
-
-- `Src/sbus_core.cpp`
-- `Inc/atom03_SBUS/sbus_core.hpp`
-- `Inc/atom03_SBUS/lifecycle_adapter.hpp`
-- `Entry.cpp` 的对象装配
-
-**修复后状态**：
-
-`SbusCore` 已增加可选的公共窄端口注入：
-
-- `IInputReporter`：上报 SBUS 在线、AUTO 模式和软件急停输入；
-- `IControlAuthority`：提交控制意图、SBUS 接管终止请求和经授权的发射意图。
-
-有效帧发布快照后调用这些端口，失联发布 `online=false`。但当前端口指针仍允许为空，以保持既有装配兼容；必须由上层对象装配将 `AppCoordinator` 分别以 `IInputReporter` 和 `IControlAuthority` 注入，才能在运行时真正接通控制链。
-
-**修复要求**：
-
-1. 由装配层向 ATOM-03 注入已批准的窄端口，不允许包含 `AppCoordinator.hpp` 或 ATOM-02 私有头。
-2. 有效帧提交 SBUS 在线状态、CH5 控制源状态和按映射生成的输入结果。
-3. CH6 急停只提交安全请求，不直接修改执行器或绕过 ATOM-14。
-4. CH7 确认请求提交前必须通过 ATOM-02/ATOM-14 规定的授权路径。
-5. 失联时上报 `online=false`，恢复时重新上报状态，但不得恢复已终止自动流程或解除急停。
-6. 端口调用与快照发布的顺序必须明确，不能让消费方读取到“新快照、旧控制状态”的不一致组合。
-
-**验收条件**：
-
-- 有效 SBUS 帧可以观察到 AppCoordinator/ATOM-02 的输入状态变化；
-- CH6 急停请求能够到达安全管理入口；
-- 失联和恢复能够更新系统输入状态；
-- ATOM-03 本身不直接驱动机构、不直接写 StateArbitrator 字段；
-- 所有拒绝/未授权动作不会产生执行器命令。
-
-### ATOM03-BUG-002：`receive_period_ms` 未生效
-
-**位置**：
-
-- `Src/sbus_config.cpp`：读取并保存 `timing.sbus_receive_period_ms`；
-- `Src/sbus_core.cpp`：读取线程没有使用 `SbusConfig::receive_period_ms`；
-- `Src/linux_sbus_byte_stream.cpp`：`kReadTimeoutMs` 固定为 100 ms，并直接传给 `poll()`。
-
-**修复后状态**：`receive_period_ms` 写入 `SbusSerialParameters::read_timeout_ms`，Linux UART 后端使用该值作为 `poll()` 超时；设备错误重试也使用该值作为可打断退避周期，已删除固定 100 ms 轮询常量。
-
-**修复要求**：
-
-1. 先明确 `receive_period_ms` 的语义：建议定义为无数据时的读取等待/轮询超时，而不是伪装成固定周期任务。
-2. 将该参数通过窄接口传给 UART 后端，禁止在 Linux 后端保留无配置的 100 ms 常量。
-3. 若改为完全数据驱动读取，则删除该消费键并同步修改 Config/Schema/设计文档；不能保留一个表面可配置、实际无效的参数。
-4. 使用单调时钟验证配置变化对行为的实际影响。
-
-**验收条件**：
-
-- 配置 20 ms 与其他合法值时，UART 等待行为可观察地不同；
-- 没有数据时不会错误地宣称收到了帧；
-- 有数据时不会被固定周期人为延迟；
-- `receive_period_ms` 不会与失联超时语义混淆。
-
-### ATOM03-BUG-003：UART 读取失败可能导致线程空转
-
-**位置**：
-
-- `Src/sbus_core.cpp:109-111`；
-- `Src/linux_sbus_byte_stream.cpp:147-170`；
-- `Public/SbusInterfaces.hpp` 的 `IUartByteStream::read()` 返回契约。
-
-**修复后状态**：`IUartByteStream::read()` 返回 `UartReadStatus`，区分数据、超时、取消、临时错误和设备错误。设备错误和临时错误进入可由 `cancel()` 打断的条件变量退避，取消直接退出读取线程。
-
-**修复要求**：
-
-1. 区分正常取消、超时、临时错误和设备错误；推荐将 `bool` 返回值改为明确的读取状态枚举。
-2. 正常 `cancel()` 必须让线程退出或尽快返回，不进入错误重试循环。
-3. 设备错误必须进入明确的 offline/故障状态，并采用退避、重开或等待生命周期关闭的策略。
-4. 不允许在永久错误状态下无延迟 `continue`。
-5. 保证 `stop()` 仍可打断读取并完成 join。
-
-**验收条件**：
-
-- 模拟 `POLLHUP`/`POLLERR` 时线程不会高频空转；
-- `cancel()` 后线程可在规定时间内退出；
-- 临时 EINTR/EAGAIN 与永久设备错误处理不同；
-- 失联状态只在状态变化时更新或具备明确节流策略。
-
-### ATOM03-BUG-004：SBUS 固定帧长度消费契约不闭合
-
-**位置**：
-
-- `Src/sbus_config.cpp:58-61` 接受配置中的任意整数帧长度；
-- `Src/sbus_core.cpp:136` 始终以固定 25 字节调用解码器；
-- `Src/sbus_decoder.cpp:8` 要求 `size == config_.frame_bytes`。
-
-**修复后状态**：核心帧缓冲区、环形缓冲区和解码器均使用 `SbusConfig::frame_bytes`；解码器只检查配置长度和通道数据所需的最小长度，不再由核心固定传入 25 字节。中心值、有效最小值和有效最大值也统一用于解码及 CH5/CH6/CH7/CH12 计算。
-
-**修复要求**：
-
-- ATOM-03 在配置读取时强制 `frame_bytes == 25`，并检查中心值、最小值、最大值符合协议契约；或统一由 ATOM-15 Schema 强制这些常量；
-- Decoder、Core、ConfigStore 和 Schema 使用同一帧长度来源；
-- 配置错误必须在生命周期初始化阶段失败，不能等运行时表现为永久离线。
-
-## 3. 相关设计一致性
-
-CH12 已在 `Design/Atomic/ATOM-03_SBUS.md` 修订为变力机构速度：364=-2000 rpm、1024=0 rpm、1684=+2000 rpm；CH13～CH16 保留。CH12 的专用缩放不使用通用 `channel_scale_x`。
-
-## 4. 版本记录
-
-| 版本 | 日期 | 说明 |
+| 编号 | 原问题 | 当前处理 |
 |---|---|---|
-| 1.0 | 2026-10-13 | 首次登记控制链未接通、读取周期未生效、UART 失败空转和固定帧长度契约不闭合。 |
-| 1.1 | 2026-10-13 | 完成代码侧控制端口、读取状态、可打断退避、读取超时配置和配置驱动帧长度；BUG-001 仍需上层装配传入公共端口后才能闭合。 |
+| ATOM03-BUG-001 | 控制链未接入仲裁/安全端口 | 用户已删除这项职责，不属于本模块缺陷；未声称端到端修复。 |
+| ATOM03-BUG-002 | 读取周期参数未生效 | ReceiveSbus 的 read_timeout_ms 直接控制 poll 等待上限，默认 20 ms。 |
+| ATOM03-BUG-003 | 永久设备错误空转 | 错误直接结束接收函数并关闭串口，不自动重试；正常停止由调用方的原子标志控制。 |
+| ATOM03-BUG-004 | 配置帧长与解析不一致 | 组帧消费同一个 frame_bytes 参数；最低字节数由 16 路 11-bit 载荷推导。 |
+
+## 保留的安全边界
+
+- CH16 不越界读取额外第三字节。
+- minimum<center<maximum 避免 CH12 除零；x 为 1～10，不强制固定标定值或固定帧长。
+- 原始值只保存在接收局部数组中；只有整帧有效才加锁替换公共 scaled_channels，所有读者必须使用同一个 mutex。
+- 公共数据只保留 scaled_channels、online 和 mutex；有效帧在同一把锁内更新数组及 online=true，进入接收/超时/无效数据/异常/退出置 online=false，数组仍保留旧值。
+- 消费者必须持锁同时读取数组和 online；在线标志不是独立帧龄看门狗，也不表示执行授权。
+- 函数退出等待受 poll 超时和外部锁等待影响，没有 cancel 管理对象。
+
+## 范围变更
+
+2026-10-16 用户要求继续精简，已删除生命周期、IConfigView、串口类和线程管理，只保留公共数据及阻塞接收函数。旧外部装配不在此次迁移范围内。
+
+2026-10-16 用户进一步授权仅公开 scaled_channels 和锁，已删除 raw_channels、online 及相关共享状态写入，ReceiveSbus 的错误返回仍保留。
+
+本次公共字段收缩通过 ARM 模块增量构建和严格语法检查；编译期检查确认只有两个数据成员，原始值及 online 已从公共数据删除。真实串口和并发压力测试未执行。
+
+2026-10-16 用户随后明确仍需要 online，现已恢复在线字段及相关写入；此决定覆盖上一条公共字段收缩，raw_channels 不恢复，仍保持三个代码文件。
+
+online 恢复后的 ARM 模块增量构建、严格语法检查和公共三成员契约检查通过；实际串口及并发压力运行未测试。
+
+2026-10-16 用户明确 CH7 和 CH13 都用通用缩放：CH7 为发射输入、CH13 为供弹舵机输入，分别保存到 scaled_channels[6]/[12]。旧 CH7 确认规则作废，不在代码或配置中恢复计数器；CH14～CH16 保留。相关规范与机器 Schema 同步更新。
+
+该通道约定通过 ARM 模块增量构建、Public-only 契约检查、11 个机器 Schema 正反例和 720 帧独立模型验证；CH12 保持专用 rpm 映射。未进行真实串口或舵机运行测试，也未迁移其他模块与运行配置。

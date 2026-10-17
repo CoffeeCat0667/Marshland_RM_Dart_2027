@@ -1,122 +1,126 @@
+// RuntimeCoordinator.hpp - 支持多线程的生命周期管理器
+//
+// 设计理念：
+// 1. 最小改动：只添加线程管理，不改变现有接口
+// 2. 易于集成：每个 ATOM 只需提供一个 init() 和 run() 函数
+// 3. 生命周期：init (顺序) → startThreads (并行) → stopThreads → shutdown (反序)
+//
+// 使用方式：
+//   RuntimeCoordinator runtime;
+//   runtime.registerModule("SBUS", init_fn, run_fn, cleanup_fn);
+//   runtime.start();    // 自动启动所有线程
+//   runtime.shutdown(); // 自动停止所有线程并清理
 #pragma once
 
-// 上提说明（见 Atoms/ATOM-01_Runtime/BugLists.md ATOM01-BUG-007）：
-//   RuntimeState / RuntimeStep / RuntimeContext / ModuleInitResult / StepResult /
-//   ILifecycleModule / toString() 已上提至 Atoms/Public/ILifecycle.hpp。
-//   原因是它们是其余 18 个 ATOM 接入启动流程的唯一公共契约，留在本模块私有头
-//   会形成 "Atom -> Atom" 横向耦合。本文件改为包含该公共头，依赖方向统一为
-//   "Atom -> Public"。
-//
-//   RuntimeCoordinator 自身（模块注册、就绪汇总、失败回滚、关闭释放）仍属
-//   ATOM-01 私有，不上提。
-#include <cstddef>
-#include <cstdint>
-
-#include "ILifecycle.hpp"
+#include <atomic>
+#include <functional>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace marshland::runtime {
 
-struct RuntimeStartResult {
-    RuntimeState state{RuntimeState::Created};
-    std::vector<StepResult> steps;
-
-    bool succeeded() const noexcept;
+enum class RuntimeState {
+    Created,
+    Starting,
+    Standby,
+    InitFailed,
+    ShuttingDown,
+    Stopped
 };
 
-// ---------------------------------------------------------------------------
-// 模块注册结果（ATOM01-BUG-009）
-//
-// addModule() 原先只用 bool 表示失败，调用点无法知道失败原因，可能造成模块
-// 静默未注册。本枚举提供可查询原因。不属于跨 ATOM 契约，仅 ATOM-01 私有 API。
-// ---------------------------------------------------------------------------
-enum class ModuleRegistrationError : std::uint8_t {
-    None,
-    IllegalState,   // 启动序列已开始或已结束：只能在 Created 阶段注册
-    NullModule,     // module == nullptr
-};
-
-inline const char* toString(ModuleRegistrationError error) noexcept
-{
-    switch (error) {
-    case ModuleRegistrationError::None:         return "none";
-    case ModuleRegistrationError::IllegalState: return "illegal-state";
-    case ModuleRegistrationError::NullModule:   return "null-module";
+inline const char* toString(RuntimeState state) noexcept {
+    switch (state) {
+        case RuntimeState::Created:      return "created";
+        case RuntimeState::Starting:     return "starting";
+        case RuntimeState::Standby:      return "standby";
+        case RuntimeState::InitFailed:   return "init-failed";
+        case RuntimeState::ShuttingDown: return "shutting-down";
+        case RuntimeState::Stopped:      return "stopped";
     }
     return "unknown";
 }
 
+struct InitError {
+    std::string step_name;
+    std::string message;
+};
+
+// 模块注册结构
 struct ModuleRegistration {
-    // ATOM01-BUG-005：step / required 原先没有默认值，调用方聚合初始化时漏填
-    // 会读到不确定值。required 取更安全的默认值 true（必需模块失败必须致命），
-    // step 取首步骤以避免未初始化比较（漏填会与既有步骤冲突而被 addModule 拒绝，
-    // 而不是产生未定义行为）。
-    RuntimeStep step{RuntimeStep::CreateDiagnostics};
-    bool required{true};
-    std::unique_ptr<ILifecycleModule> module;
+    std::string name;
+
+    // 初始化函数（在主线程顺序执行）
+    // 返回 true 表示成功，false 表示失败
+    std::function<bool()> init;
+
+    // 运行函数（在独立线程中执行，可选）
+    // running 为 false 时应该退出循环
+    std::function<void(std::atomic<bool>& running)> run;
+
+    // 清理函数（在主线程反序执行）
+    std::function<void()> cleanup;
 };
 
 class RuntimeCoordinator final {
 public:
-    explicit RuntimeCoordinator(RuntimeContext context = {});
+    RuntimeCoordinator() = default;
     ~RuntimeCoordinator();
 
     RuntimeCoordinator(const RuntimeCoordinator&) = delete;
     RuntimeCoordinator& operator=(const RuntimeCoordinator&) = delete;
-    RuntimeCoordinator(RuntimeCoordinator&&) = delete;
-    RuntimeCoordinator& operator=(RuntimeCoordinator&&) = delete;
 
-    // ATOM01-BUG-009：同一步骤允许注册多个模块（1 步骤 : N 模块），同一步骤内按
-    // 注册先后顺序执行；失败原因通过 lastRegistrationError() 查询。
-    bool addModule(ModuleRegistration registration);
-    ModuleRegistrationError lastRegistrationError() const noexcept;
+    // 注册模块（在 start() 之前调用）
+    // 模块按注册顺序初始化，按相反顺序清理
+    void registerModule(ModuleRegistration registration);
 
-    // ATOM01-BUG-011：启动前可查询的**真实**注册数量。装配层必须在"模块注册结束、
-    // 首次 start() 之前"判断注册表是否为空；stepResults() 只有 start() 之后才有
-    // 内容，无法承担该判据。直接返回 modules_.size()，不维护第二份计数，也不创建
-    // 占位模块。查询不改变状态、不调用 initialize、不产生分配或硬件访问。
-    std::size_t registeredModuleCount() const noexcept;
+    // 便捷重载：注册只需要初始化的模块（无独立线程）
+    void registerModule(const std::string& name,
+                       std::function<bool()> init,
+                       std::function<void()> cleanup);
 
-    // ATOM01-BUG-004：内部已捕获全部异常（含 reserve/push_back/结果快照拷贝的
-    // 分配失败）并统一回滚为 InitFailed，因此声明为 noexcept；调用方（例如
-    // AppCoordinator::Start 本身是 noexcept）不会因异常外泄而 std::terminate。
-    //
-    // ATOM01-BUG-003（2026-09-27 裁决收紧）：**不支持运行中重启**。只有 Created
-    //（从未启动）会执行启动序列；Stopped / InitFailed / Standby 等状态一律返回
-    // 既有快照，不重新初始化。运行中需要重新初始化只能重启进程。
-    RuntimeStartResult start() noexcept;
+    // 便捷重载：注册需要独立线程的模块
+    void registerModule(const std::string& name,
+                       std::function<bool()> init,
+                       std::function<void(std::atomic<bool>&)> run,
+                       std::function<void()> cleanup);
 
+    // 启动所有模块
+    // 1. 顺序执行所有模块的 init()
+    // 2. 为有 run() 的模块启动独立线程
+    // 返回 true 表示全部成功（state = Standby）
+    // 返回 false 表示失败（state = InitFailed），错误信息在 errors()
+    bool start() noexcept;
+
+    // 关闭所有模块
+    // 1. 停止所有线程（设置 running_ = false 并 join）
+    // 2. 反序执行所有模块的 cleanup()
     void shutdown() noexcept;
 
-    RuntimeState state() const noexcept;
-
-    // ATOM01-BUG-002 修复：原 canExecuteActuatorCommands() 以本地 RuntimeState::Standby
-    // 作为执行器动作判据，会把 MANUAL / DEBUG / CALIBRATION / AUTO_FIRE 全部锁死。
-    // 本模块只暴露"硬件生命周期事实"（state() / stepResults()）；业务闸门必须由上层
-    // 结合权威 SystemMode 判定（见 Atoms/Public/AppCoordinator::RunGate）。
-    // 该方法已按授权移除，避免被误用为安全闸门。
-    const std::vector<StepResult>& stepResults() const noexcept;
-    const RuntimeContext& context() const noexcept;
+    // 状态查询
+    RuntimeState state() const noexcept { return state_; }
+    bool succeeded() const noexcept { return state_ == RuntimeState::Standby; }
+    const std::vector<InitError>& errors() const noexcept { return errors_; }
 
 private:
     struct RegisteredModule {
-        RuntimeStep step;
-        bool required;
-        std::unique_ptr<ILifecycleModule> module;
-        bool started{false};
+        std::string name;
+        std::function<bool()> init;
+        std::function<void(std::atomic<bool>&)> run;
+        std::function<void()> cleanup;
+        bool initialized{false};
     };
 
-    static ModuleInitResult exceptionResult(const char* module_name,
-                                            const char* message) noexcept;
-    void failStart() noexcept;
-
-    // 以当前状态与步骤结果构造只读快照；分配失败时退化为"只有状态"，不抛异常。
-    RuntimeStartResult currentResult() const noexcept;
-
-    RuntimeContext context_;
     RuntimeState state_{RuntimeState::Created};
-    ModuleRegistrationError registration_error_{ModuleRegistrationError::None};
+    std::vector<InitError> errors_;
     std::vector<RegisteredModule> modules_;
-    std::vector<StepResult> step_results_;
+    std::vector<std::thread> threads_;
+    std::atomic<bool> running_{false};
+
+    bool tryInit(RegisteredModule& module) noexcept;
+    void startThreads() noexcept;
+    void stopThreads() noexcept;
+    void rollback() noexcept;
 };
 
 } // namespace marshland::runtime

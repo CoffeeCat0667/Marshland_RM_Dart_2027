@@ -2,8 +2,8 @@
 
 > 版本：1.0
 > 日期：2026-10-15
-> 适用模块：`Atoms/ATOM-11_Fire`
-> 关联文档：`Atoms/ATOM-11_Fire/PLAN.md`（v0.5）、`Atoms/Public/GeneralBugs/20261015-Entry.md`
+> 适用模块：`../Atoms/ATOM-08_Control`
+> 关联文档：`../Atoms/ATOM-08_Control`（v0.5）、`Atoms/Public/GeneralBugs/20261015-Entry.md`
 
 ## 1. 接入目标
 

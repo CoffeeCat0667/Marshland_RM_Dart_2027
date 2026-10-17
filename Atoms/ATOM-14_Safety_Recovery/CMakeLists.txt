@@ -54,8 +54,3 @@ if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
 endif()
-
-# 依赖声明进入 CMake 依赖图（上层模板约定；../Public 包含路径仅作兜底）
-if(TARGET Marshland::PublicHeaders)
-    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE} Marshland::PublicHeaders)
-endif()

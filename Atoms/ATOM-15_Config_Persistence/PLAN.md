@@ -226,6 +226,8 @@ const auto result = store.updateRuntime(
 | 0.9 | 2026-10-14 | 将 `force` 和 `thread` 加入必需配置结构；完成 Q-13 校验、标量数组查询修复，并通过初始配置与集成样例 Schema 静态校验及 ARM 增量编译。 |
 | 1.0 | 2026-10-15 | JSON 解析/序列化切换为 nlohmann/json 3.12.0；配置校验切换为编译期嵌入的 ConfigSchema（pboettch json-schema-validator 2.4.0）+ 薄语义层；修复 getStringAt 标量字符串数组读取；同步测试样例。 |
 | 1.1 | 2026-10-15 | 应 ATOM-09：`force` 域 9 键全部写入 `dart_control.json` 并纳入 Schema `required`；`sbus.functions` 新增 `manual_force→CH12` 并加入 Schema `contains` 强制映射；测试样例同步。ATOM-15 代码零改动（Schema 化改造的直通收益）。 |
+| 1.2 | 2026-10-16 | 双源超时键清理（全工程消费调查后执行）：从 Schema 删除零消费的 `timing.http_request_timeout_ms`、`timing.websocket_push_period_ms`；同步删除 `dart_control.json` 与集成测试样例中的 `websocket_push_period_ms`。`timing.websocket_io_timeout_ms` 因 ATOM-17 语义独立（transport 未兑现）暂留；vision 四键待 ATOM-12 落地时定型。`ConfigSchema.md`/`Design/Config.md` 的同步由文档拥有者执行。 |
+| 1.3 | 2026-10-16 | 按用户裁决删除全部对外接口面并做内部瘦身：`ConfigStore` 不再继承 `config::IConfigView`、删除 `LifecycleAdapter`（`runtime::ILifecycleModule`）与 12 个查询方法，本目录不再包含/链接 `Atoms/Public`；内部合并三处更新收尾路径、删除重复键跟踪与薄语义层。详见 §12。 |
 
 ## 11. JSON 库与 Schema 校验化改造（2026-10-15）
 
@@ -244,3 +246,49 @@ const auto result = store.updateRuntime(
 - WSL ARM 交叉增量编译通过：`marshland_thirdparty_json_schema_validator`、`atom_15_config_persistence`、`marshland`、`marshland_atom15_tests`、`marshland_integration_tests`、`marshland_gateway_tests`、`marshland_public_contracts_check`。
 - 静态核对：`Config/dart_control.json` 与两个测试样例逐节对照嵌入 Schema 通过（必需键、`additionalProperties:false`、`contains+allOf`、枚举、pattern）。
 - 未运行任何 ARM 二进制（WSL 无 qemu-aarch64）；pboettch 对本 Schema 用到的 `$defs` 引用、`contains+allOf`、联合类型、`patternProperties` 的运行期行为需在 ARM 主机或 qemu 上执行 `marshland_atom15_tests`/`marshland_integration_tests` 后方可宣称通过。新增手工用例入口 `marshland_atom15_tests config.store_load_invalid_schema`，未变更顶层 CTest 用例列表。
+
+## 12. 对外接口面删除与内部瘦身（2026-10-16，用户裁决）
+
+### 12.1 背景与冲突记录
+
+用户要求"调用装配层/其他 ATOM 公开接口与对外提供数据/接口全删，同时极大简化内部代码"。经核对：本模块**从无出站调用**（include 仅 `IConfigView.hpp`/`ILifecycle.hpp` 两个公共契约 + 第三方，CMake 未链接任何其他 ATOM 目标），因此该要求实际落点为删除**入站的对外接口面**。该删除与 `Design/Atomic/ATOM-15_Config_Persistence.md` §单一职责、§验收条件、§实现状态（:16、:55-61、:65）以及 `Atoms/Public/IConfigView.hpp` 的归属声明（:7、:64）冲突，已按 AGENTS.md 要求向用户明确说明。用户在同一冲突已披露的前提下确认执行，并选定：查询方法整体删除（方案 B）、仅改本工作目录。
+
+### 12.2 本目录改动
+
+| 文件 | 改动 |
+|---|---|
+| `Inc/atom15_config/config_store.hpp` | 删除 `#include "IConfigView.hpp"` / `"ILifecycle.hpp"`；`ConfigStore` 不再继承任何基类；删除 12 个查询方法（`getInt/getDouble/getBool/getString/has/getArraySize/getIntAt/getDoubleAt/getBoolAt/getStringAt/configVersion/isLoaded`）；删除 `LifecycleAdapter` |
+| `Src/config_store.cpp` | 删除 `LifecycleAdapter::initialize/shutdown`；删除 `config::ConfigStatus` 相关查询实现与 `arrayField` 模板；删除 `DuplicateKeyTracker`（重复键改为 nlohmann 默认的"后者覆盖"，不再诊断）与薄语义层 `validateSemantics`；新增 `commitCandidate()` 统一三条更新路径的"校验 → 替换活动快照 → 落盘"收尾；`readPid` 整数域改为表驱动 |
+| `CMakeLists.txt` | 去掉 `../Public` 包含目录与 `Marshland::PublicHeaders` 链接（本模块已不含公共契约头） |
+
+保留的对外可调用面：`load` / `reload` / `path` / `diagnostics` / `setChangeCallback` / `updateRuntime` / `readPid` / `writePid` / `readReserved` / `writeReserved` 与 `ChangeCallback`（构造注入的 `std::function`，非公共契约）。
+
+### 12.3 已确认承担的语义损失
+
+- **重复对象键**不再被拒绝，改为库默认的静默保留最后值；`ConfigError::INVALID_JSON` 不再覆盖该情形。
+- **跨字段/跨元素检查**随薄语义层删除：`motor[].id`/`node` 去重、`sbus.valid_min ≤ valid_max`、`pulse_max_us > pulse_min_us`、`angle_range_deg` 与 `pca9685.channel_range` 有序性、`channel_range` 必须含 FEED/FIRE、PCA9685 prescale 范围。Schema 能表达的部分（范围、枚举、`contains+allOf`、`additionalProperties`）不受影响。
+- **查询能力消失**：其他模块无法再经本模块读配置。原登记于 `Atoms/Public/GeneralBugs/2026-10-15-AllBugs.md` 的 ALL-15-07（`getNestedArraySize`/`getNestedStringAt` 未 override）随查询面删除而失效，`BugLists.md` 无需新增条目。
+
+### 12.4 验证与遗留
+
+- WSL ARM 交叉**增量**编译通过（未 clean、未全量重编译）：`cmake --build cmake-build-ubuntu-arm --target atom_15_config_persistence --parallel 4`，`config_store.cpp` 编译并链接 `libatom_15_config_persistence.a` 成功。因包含目录已移除 `../Public`，该次编译同时证明本模块不再依赖任何公共契约头。
+- 未运行任何二进制（WSL 无 qemu-aarch64），不宣称动态行为通过。
+- **上层遗留（本模块无权修改，由用户处理）**：`Entry.cpp` 的 `LifecycleAdapter` 注册与 `IConfigView&` 注入、`Tests/Atom15ConfigTests.cpp`（含查询与 `IConfigView` 用例）以及 `Atoms/Public/IConfigView.hpp`:7/:64 的归属声明均需同步；在上述文件修改前，整个工程不可编译。
+- 改动前基线已备份至 `%TEMP%\atom15_baseline_20261016_233701\`（三个文件），另可经 git 提交 `b43da44` 回溯。
+
+### 12.5 两处补充改动（2026-10-16，用户授权）
+
+针对 `Config/dart_control.json` 与 `Rule/ConfigSchema.schema.json` 的实际结构复核（19 处 `["T","null"]` 类型联合、5 个顶层位置共 7 个开放对象），确认仅靠改这两个数据/规则文件无法闭合全部缺口，故按用户授权在本模块补两处实现：
+
+1. **`ConfigValue` 增加 `std::monostate`**，表示 JSON `null`。用于"标记 [待定]、禁止臆造"的显式占位（如 `servo.channels[1].id`、`sbus.functions[].channel`、`controlSourceRules[].when.*`）。
+   - `toJson()`：`monostate` → `nullptr`。
+   - `compatible()` 预检规则：当前值为 `null`（待定占位）时允许写入任意具体值，最终由 Schema 裁决；当前值已定则**不允许改回 `null`**（返回 `INVALID_TYPE`），避免把已确定参数误置回"待定"。
+2. **写侧批量原子提交**：`updateRuntime` 增加 `std::span<const Assignment>` 重载，整批落在同一候选快照上——一次类型预检、一次 Schema 校验、一次落盘、一次版本自增；任一条不合法则整批不生效（活动快照、版本、文件均不变）。原单键签名保留为薄转发，行为不变。
+   - 目的：为 PID 这类"多字段必须一起生效"的写入保留事务性，避免逐字段提交在 `persistence.effective_timing = HOT_RELOAD_IMMEDIATE` 下留下中间态。
+   - 变更回调按赋值逐条触发（版本号同一）；重复键以后提交者为准。
+
+未改动 `Config/dart_control.json`、`Rule/ConfigSchema.schema.json`：二者不在本工作目录的读写许可范围内（AGENTS.md §2），本轮仅按用户明确指定读取。
+
+验证：`cmake --build cmake-build-ubuntu-arm --target atom_15_config_persistence --parallel 4` 增量编译通过，无告警。仍未运行任何 ARM 二进制。
+
+

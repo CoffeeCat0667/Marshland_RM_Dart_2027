@@ -3,15 +3,16 @@
 | 项目 | 内容 |
 |---|---|
 | 模块 | ATOM-10 换弹与供弹机构控制（Marshland） |
-| 模块目录 | `Atoms/ATOM-10_Reload_Feed/` |
-| 本文档版本 | 1.0 |
-| 日期 | 2026-10-15 |
+| 模块目录 | `../Atoms/ATOM-08_Control` |
+| 本文档版本 | 1.1 |
+| 日期 | 2026-10-16 |
 | 设计基线 | PRD 0.10、PEF 1.5、Interface 1.8、Config 1.4、Atoms 0.12、ConfigSchema **1.9** |
-| 关联文档 | `Rule/AtomIntegration.md`、`Rule/ConfigSchema.md`、`Atoms/ATOM-10_Reload_Feed/PLAN.md`、`Atoms/Public/GeneralBugs/20261015-Entry.md` |
+| 关联文档 | `Rule/AtomIntegration.md`、`Rule/ConfigSchema.md`、`../Atoms/ATOM-08_Control`、`Atoms/Public/GeneralBugs/20261015-Entry.md` |
 
 ## 1. 模块目标与 CMake
 
-1. 模块目标名 `atom_10_reload_feed`，别名 `Marshland::atom_10_reload_feed`；链接一律使用别名。
+1. 模块目标名 `atom_10_reload_feed`，别名 `Marshland::atom_10_reload_feed`；仅装配层可链接该别名，
+   **其他 ATOM 禁止链接本模块目标**。
 2. `Src/` 非空，目标为 **STATIC** 库；不定义 `project()`、不产生可执行文件、无 `main()`。
 3. 依赖：文件尾部按 `if(TARGET Marshland::PublicHeaders)` 声明公共契约依赖；模块无线程，
    不需要 `Threads::Threads`；不设置任何编译器/架构/C++ 标准/编译选项。
@@ -34,10 +35,11 @@ ATOM-10_Reload_Feed/
     └─ lifecycle_adapter.cpp        # 薄壳（≤ 50 行，无业务逻辑）
 ```
 
-包含约定：消费方以 `atom10_reload_feed/<头文件>` 形式包含；公共契约（`ILifecycle.hpp`、
-`IConfigView.hpp`、`IMonotonicClock.hpp`、`AppInterfaces.hpp`、`MarshlandTypes.hpp`、
-`StateArbitrationTypes.hpp`）经 `Marshland::PublicHeaders` 传递。
-禁止包含任何其他 ATOM 的私有头或 `AppCoordinator.hpp`。
+包含约定：本模块头文件为**装配面**（assembly-facing），仅装配层（Entry 等）以
+`atom10_reload_feed/<头文件>` 形式包含；**其他 ATOM 禁止包含本模块任何头文件**。
+公共契约（`ILifecycle.hpp`、`IConfigView.hpp`、`IMonotonicClock.hpp`、`AppInterfaces.hpp`、
+`MarshlandTypes.hpp`、`StateArbitrationTypes.hpp`）经 `Marshland::PublicHeaders` 传递。
+本模块禁止包含任何其他 ATOM 的私有头或 `AppCoordinator.hpp`。
 
 ## 3. 配置键（经 `IConfigView` 逐项读取并检查 `ConfigStatus`）
 
@@ -56,7 +58,7 @@ ATOM-10_Reload_Feed/
 
 ## 4. 窄接口与装配职责
 
-ATOM-10 只声明能力，实现全部由装配层注入：
+ATOM-10 只声明**消费的**能力（方向：ATOM-10 → 他模块资源），实现全部由装配层注入：
 
 | 窄接口 | 语义 | 装配层实现方 |
 |---|---|---|
@@ -71,7 +73,18 @@ ATOM-10 只声明能力，实现全部由装配层注入：
 4. 正常到位必须提交 `VELOCITY = 0`（有效闭环目标），**不得**以 `DISABLED`/零力矩替代；
 5. 零转速闭环 ≠ 零力矩：正常到位为前者，手动停止/急停/故障为后者。
 
-## 5. AppCoordinator 晚绑定（方案 C）
+## 5. 线程模型（2026-10-16 用户裁决）
+
+1. 本模块为**纯逻辑 ATOM**：只暴露装配面，**不向任何其他 ATOM 提供接口**；
+   跨模块请求全部表现为"本模块经窄接口向他模块资源发出请求"。
+2. 本模块内部**不创建任何线程**；装配层在装配时为本模块创建**工作线程**，
+   关闭时由装配层结束该线程。
+3. 内核的全部公开方法（动作命令、事件通知、`poll()`、状态查询）都由装配层的
+   本模块工作线程调用；经窄接口发出的请求（电机、供弹、仲裁、故障上报）均从该线程发出。
+4. 内核非线程安全；装配层须保证对同一内核实例的单线程调用。
+5. 因此内核方法不使用互斥锁；若装配层需要跨线程观察状态，由装配层自行同步。
+
+## 6. AppCoordinator 晚绑定（方案 C）
 
 依据 `Atoms/Public/GeneralBugs/20261015-Entry.md` 的架构裁决：`IControlAuthority` /
 `IInputReporter` 仅由 `AppCoordinator` 实现，而 `AppCoordinator` 晚于模块注册才能构造，
@@ -90,7 +103,7 @@ ATOM-10 只声明能力，实现全部由装配层注入：
 该约定同样适用于面临同一循环依赖的 ATOM-08/09/11（及后续 ATOM-12/13/14/18），
 建议在 `Rule/AtomIntegration.md` 中固化为统一接入规范。
 
-## 6. 生命周期注册
+## 7. 生命周期注册
 
 1. 适配器注册步骤为 `RuntimeStep::InitializeServoOutputs`（与 ATOM-11 共用同一步骤，
    同步步骤内按注册先后 FIFO）；
@@ -99,22 +112,26 @@ ATOM-10 只声明能力，实现全部由装配层注入：
    `lastRegistrationError()`；ATOM-10 不自行注册，也不注册其他模块；
 4. 顺序依赖：ATOM-04 → ATOM-05 → ATOM-10；ATOM-07 → ATOM-10（`AtomIntegration.md` §6.3）。
 
-## 7. 命令与事件接线
+## 8. 命令与事件驱动（全部由装配层工作线程发起）
 
-| 调用方 | 接口 | 说明 |
+**其他 ATOM 不调用本模块的任何方法。** 装配层的 ATOM-10 工作线程按下表观察仲裁状态
+与事件，并驱动内核：
+
+| 驱动来源（装配层观察） | 内核接口 | 说明 |
 |---|---|---|
-| ATOM-13（自动流程） | `requestLift(source, IntentKind::CONTROL, request_id)` / `requestFeedOnce(...)` / `requestLower(...)` | 供弹 2 s 等待由 ATOM-13/PEFExecutor 自 `FeedStatus::last_trigger_micros` 起独立计时 |
-| ATOM-14（安全恢复） | `requestLift(source, IntentKind::SAFETY_RECOVERY, request_id)` | 恢复抬起再次失败由 ATOM-14 进入 `FAULT` 锁定；ATOM-10 不自动重试 |
-| 手动/调试动作 | `requestLift/requestLower/requestFeedOnce`（`CONTROL`） | 对应 WEB action `reload_lift`/`reload_lower`/`feed_once` |
+| `AutoFireState` 进入 `RELOAD_LIFT` | `requestLift(ControlSource::AUTO, IntentKind::CONTROL, request_id)` | 自动流程换弹抬起 |
+| `AutoFireState` 进入 `FEED` | `requestFeedOnce(...)` | 自动流程供弹 |
+| `AutoFireState` 进入 `RELOAD_LOWER` | `requestLower(...)` | 自动流程换弹放下 |
+| 供弹 2 s 等待 | —（无接口） | **触发时刻即仲裁状态 `FEED → FEED_WAIT` 的转换时刻**（2026-10-16 裁决），ATOM-13 从状态转换事件自取计时起点；ATOM-10 不提供跨模块数据通道 |
+| 安全恢复阶段（ATOM-14 编排） | `requestLift(source, IntentKind::SAFETY_RECOVERY, request_id)` | 恢复抬起；再次失败由 ATOM-14 进入 `FAULT` 锁定（装配层经 `reloadStatus()` 观察 `last_failed_action`/`completed_actions`）；ATOM-10 不自动重试 |
+| WEB/SBUS 手动动作意图 | `requestLift` / `requestLower` / `requestFeedOnce`（`CONTROL`） | 对应动作 `reload_lift`/`reload_lower`/`feed_once` |
 | 手动停止 | `requestManualStop(source)` | 取消动作与计时，两侧零力矩；不等待动作组完成边界 |
-| 仲裁/安全事件 | `notifySoftwareEstopLocked()` / `notifySoftwareEstopReleased()` | 急停锁定：取消一切、两侧零力矩、自闭锁普通命令 |
-| ATOM-05 故障联动 | `notifySideFault(side)` | 单侧离线/反馈/PID 异常 → 两侧零力矩、取消动作与计时 |
-| 周期驱动 | `poll()` | 由装配层按控制周期（≤ 100 ms）调用，推进运行计时收尾与供弹时序 |
-| 状态查询 | `reloadStatus()` / `feedStatus()` | `action_in_progress()` 为控制源接管边界依据；完成次数单调递增 |
+| 软件急停锁定/解除 | `notifySoftwareEstopLocked()` / `notifySoftwareEstopReleased()` | 锁定：取消一切、两侧零力矩、自闭锁普通命令 |
+| ATOM-05 换弹侧故障上报 | `notifySideFault(side)` | 单侧离线/反馈/PID 异常 → 两侧零力矩、取消动作与计时 |
+| 控制周期调度（≤ 100 ms） | `poll()` | 推进运行计时收尾与供弹时序 |
+| 机构状态上报 | `reloadStatus()` / `feedStatus()` | 由装配层汇入 `mechanism_state`；`action_in_progress()` 为控制源接管边界依据 |
 
-线程约定：内核非线程安全；命令、事件通知与 `poll()` 须由同一线程调用。
-
-## 8. 安全语义（验收核对用）
+## 9. 安全语义（验收核对用）
 
 1. 需裁决的动作先 `SubmitIntent` 并检查 `accepted`；`accepted == false` 不得当作成功；
 2. 意图分类：零力矩 `SAFETY`（记录性质，命令无条件发出，fail-safe）、恢复抬起
@@ -129,9 +146,11 @@ ATOM-10 只声明能力，实现全部由装配层注入：
 8. 动作失败/供弹超时经 `IInputReporter::ReportFault(true, SEVERE)` 上报（对应
    F-RELOAD-001 条件）；换弹故障不冒充舵机 IIC 故障。
 
-## 9. 接入自检清单
+## 10. 接入自检清单
 
 - [ ] `Atoms/CMakeLists.txt` 已 `add_subdirectory(ATOM-10_Reload_Feed)`；
+- [ ] **其他 ATOM 未包含本模块头文件、未链接本模块目标**（纯逻辑 ATOM 只暴露装配面）；
+- [ ] **装配层已创建本模块工作线程并承担其销毁**；命令/事件/`poll()` 全部来自该同一线程；
 - [ ] `ConfigSchema.schema.json` 与初始 `dart_control.json` 已迁移（含 `reload.speed_rpm`，
       移除旧 `servo_mechanisms.reload[]` 与供弹角度字段）——否则配置装载会如实失败；
 - [ ] 装配层已提供 `IReloadMotorPair` / `IFeedActuator` 实现；
@@ -139,8 +158,9 @@ ATOM-10 只声明能力，实现全部由装配层注入：
 - [ ] `poll()` 已接入控制周期调度（≤ 100 ms）；
 - [ ] ARM 增量构建（WSL aarch64 或目标机）通过，`-Wall -Wextra -Wpedantic` 零警告。
 
-## 10. 版本记录
+## 11. 版本记录
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | 1.0 | 2026-10-15 | 首次编制。固化 ATOM-10 接入规则：模块目标、目录结构、配置键（ConfigSchema v1.9）、窄接口契约、AppCoordinator 晚绑定（方案 C）、生命周期注册、命令与事件接线、安全语义与接入自检清单。 |
+| 1.1 | 2026-10-16 | 按用户裁决新增 §5 线程模型：纯逻辑 ATOM 只暴露装配面、不向其他 ATOM 提供接口，工作线程由装配层创建与销毁；§8 命令与事件接线全部改为装配层工作线程驱动（其他 ATOM 不再作为调用方）；供弹 2 s 计时起点改为仲裁状态 `FEED → FEED_WAIT` 转换时刻（无跨模块数据通道）；自检清单增加禁止他模块包含/链接、线程归属与单线程调用三项。 |

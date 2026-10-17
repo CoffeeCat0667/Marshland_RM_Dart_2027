@@ -10,9 +10,9 @@
 | 机器可读形式 | `Rule/ConfigSchema.schema.json`（JSON Schema 2020-12）—— **形式化契约，供 `ATOM-15` 直接校验**。本文件是它的中文可读说明；两者不一致时以 schema 文件为准并修订本文件 |
 | 消费者 | `ATOM-15`（解析、校验、提供查询）与 `ATOM-03`～`ATOM-19`（经 `IConfigView` 取值） |
 | 关联文档 | `Rule/AtomIntegration.md`（接入规范）、`Atoms/ATOM-15_Config_Persistence/PLAN.md`（实现方案） |
-| 版本 | 1.9 |
+| 版本 | 1.11 |
 | 编制日期 | 2026-09-27 |
-| 更新日期 | 2026-10-15 |
+| 更新日期 | 2026-10-16 |
 | 状态 | **正式**。修改本文件必须同步 `Design/Config.md` 与 `ConfigSchema.schema.json`；冲突时以 `Design/Config.md` 的数值为准并修订本文件 |
 
 **为什么需要本文件**：`Design/Config.md` 定义了约 200 项参数的**数值**，但没有规定 JSON 键名。
@@ -199,7 +199,6 @@
 | `timing.can_io_period_ms` | int | ms | CAN 接收/发送周期 |
 | `timing.gpio_sample_period_ms` | int | ms | GPIO 采样周期 |
 | `timing.sbus_receive_period_ms` | int | ms | SBUS 接收周期 |
-| `timing.websocket_push_period_ms` | int | ms | WebSocket 推送周期 |
 | `timing.estop_response_max_ms` | int | ms | 软件急停响应上限 |
 | `timing.zero_torque_send_period_ms` | int | ms | 零力矩发送周期 |
 | `timing.reload_lift_run_s` | int | s | 换弹抬起**运行时间**（3）。左右电机抬起转速目标均成功提交后计时；到期将两台目标转速设为 0，均成功提交后判定抬起到位 |
@@ -218,7 +217,6 @@
 | `timing.fire_max_action_ms` | int | ms | 发射机构最大动作时间 |
 | `timing.can_comm_timeout_ms` | int | ms | 必需；初始值 200；范围 1～6000；允许热修改，WEB 来源且仅 MANUAL/DEBUG 模式；缺失时加载失败；ATOM-15 不实现超时后的业务处理 |
 | `timing.iic_comm_timeout_ms` | int | ms | IIC 通信超时（200） |
-| `timing.http_request_timeout_ms` | int | ms | HTTP 请求超时（200） |
 | `timing.websocket_io_timeout_ms` | int | ms | WebSocket 单次读写/消息处理超时 |
 | `timing.vision_status_update_timeout_ms` | int | ms | 视觉系统状态更新超时（200） |
 | `timing.vision_no_response_timeout_ms` | int | ms | 视觉系统无响应超时（30000） |
@@ -450,6 +448,19 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `neutral` | int | 中立/默认值 |
 | `loss_behavior` | str | 失联行为标识 |
 
+通道绑定与缩放约定（本次替代旧 CH7 确认规则和 CH13 保留约定）：
+
+| 功能名 | 通道 | 公共数组下标 | 数值映射 |
+|---|---|---|---|
+| `manual_fire` | CH7 | `scaled_channels[6]` | `(raw - center) * x` |
+| `manual_feed` | CH13 | `scaled_channels[12]` | `(raw - center) * x`，与 CH7 相同 |
+
+- CH7/CH13 共用原始值有效范围和同一个 x，独立解析、独立输出；不进行持续帧数确认，也不直接产生发射/供弹动作。
+- 推荐标定 364/1024/1684 对应 `-660*x`/0/`+660*x`；输出不是舵机角度或 PWM。
+- `signal_type` 的 SWITCH/JOYSTICK 是输入标签，不改变 CH7/CH13 的通用缩放，不引入确认计数；不新增必填功能条目或配置键。
+- `sbus.functions[]` 中一旦出现 `manual_fire` 或 `manual_feed`，其 channel 分别必须是 CH7、CH13，不能写成其他通道或 null。机器 Schema 同步约束这些绑定。
+- CH12 仍使用专用 rpm 映射，只有 CH14～CH16 保留、不映射为动作。
+
 **`[待定]` 通道必须写为 `null`**（当前：`sbus.estop_confirm`、`sbus.auto_start` 的通道待定）。
 `ATOM-03` 遇到 `null` 时**必须**保持该功能未映射，**禁止**推断。
 
@@ -601,7 +612,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `http.charset` | str | — | 字符编码，`UTF-8` |
 | `http.request_body_limit_bytes` | int | B | 请求体上限（64 KiB） |
 | `http.response_body_limit_bytes` | int | B | 响应体上限（1 MiB） |
-| `http.request_timeout_ms` | int | ms | 请求处理超时（200） |
+| `http.request_timeout_ms` | int | ms | 请求处理超时（200）；HTTP 请求超时的唯一配置键（原 `timing.http_request_timeout_ms` 已合并删除，见 §6 v1.10） |
 | `http.auth_required` | bool | — | 用户登录，`false` |
 | `http.permission_levels_required` | bool | — | 权限等级，`false` |
 | `http.confirm_for_normal_ops` | bool | — | 普通操作二次确认，`false` |
@@ -647,7 +658,7 @@ PID 参数属 `Config.md` §13.3 的**必须持久化内容**：运行期可经 
 | `websocket.reconnect_jitter` | bool | — | 是否加入随机抖动，`true` |
 | `websocket.control_over_ws_allowed` | bool | — | 是否允许经 WS 提交控制请求，`false` |
 | `websocket.multi_client_mode` | str | — | 多客户端仲裁，`READ_ONLY_SUBSCRIBE` |
-| `websocket.push_period_ms` | int | ms | 状态推送周期（20） |
+| `websocket.push_period_ms` | int | ms | 状态推送周期（20）；推送周期的唯一配置键（原 `timing.websocket_push_period_ms` 已合并删除，见 §6 v1.10） |
 | `websocket.envelope_fields` | array&lt;str&gt; | — | 信封字段名顺序 |
 | `websocket.message_types` | array&lt;str&gt; | — | 服务端消息类型集合 |
 
@@ -832,5 +843,7 @@ YAW 目标参数、变力参数、校准参数、100 个预留变量。
 | 1.7 | 2026-10-14 | 按 `Config.md` §5.7 更正 §2.7.1：换弹机构为**左右两台 M3508**，原「`reload[]` 四个舵机」键结构作废；§5 待裁决第 1 项章节号 §5.6 → §5.7。`servo_mechanisms.reload[]` 与初始 JSON 的键结构迁移待确认，未在本版实施。 |
 | 1.8 | 2026-10-14 | 落实蓄力 P1/P2、SBUS CH8/CH9 映射、ATOM-07 完整舵机配置与 IIC/线程配置；新增变力 `center_deadband_rpm` 和固定 `center_action=ZERO_TORQUE`，`ZERO_SPEED` 仅保留为扩展说明。 |
 | 1.9 | 2026-10-15 | 按用户裁决（经 ATOM-10 工作目录一次性例外授权修订本文件）：① §2.7.1 新增 `reload.speed_rpm` 单个幅值键（2000，方向为消费模块内约定：抬起左正右负、放下左负右正）；② §2.7.2 供弹机构硬件变更、不再使用角度控制，`feed.angle1_deg`/`feed.angle2_deg` 与 `timing.feed_angle2_hold_ms` 作废，保持时间由 `feed.hold_ms` 承载；③ 删除旧四舵机残留 `servo.strategy.reload_lift_group`/`reload_lower_group`，`servo.strategy.feed_sequence` 改为 `STANDBY_TO_ACTION_TO_STANDBY`；④ §2.10.3 注明 FEED 角度字段固定 `null`；⑤ 待裁决 #1/#4 收敛至 FIRE。**未同步** `ConfigSchema.schema.json` 与初始 `Config/dart_control.json`（不在本次授权范围；schema 与 JSON 的迁移待 ATOM-15 接入时实施）。 |
+| 1.10 | 2026-10-16 | 双源超时键清理（经用户一次性例外授权修订本文件，全工程消费调查为依据）：① 删除零消费的 `timing.http_request_timeout_ms`，HTTP 请求超时唯一键为 `http.request_timeout_ms`；② 删除零消费的 `timing.websocket_push_period_ms`，推送周期唯一键为 `websocket.push_period_ms`；③ `timing.websocket_io_timeout_ms` 因 ATOM-17 语义独立（单次读写上限，transport 尚未兑现）暂留；④ vision 四键待 ATOM-12 落地时定型。已同步 `ConfigSchema.schema.json` 与初始 `Config/dart_control.json`。 |
+| 1.11 | 2026-10-16 | 绑定 manual_fire=CH7、manual_feed=CH13，两者均通用缩放、无持续帧数确认，只有 CH14～CH16 保留；同步机器 Schema 的按功能名通道约束，不新增必填功能条目或配置键，保留 1.10 超时键清理等已有修订。 |
 
 

@@ -17,12 +17,11 @@ if(TARGET ${ATOM_MODULE_TARGET})
     return()
 endif()
 
-# 公开包含目录：本目录(header-only 布局) / Inc/ / 同级共享 Public/
+# 公开包含目录：本目录 / Inc/（不引 Public，本模块不包含跨模块契约头）
 set(ATOM_MODULE_INCLUDE_DIRS "")
 foreach(ATOM_MODULE_INC
         "${ATOM_MODULE_DIR}"
-        "${ATOM_MODULE_DIR}/Inc"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Public")
+        "${ATOM_MODULE_DIR}/Inc")
     if(IS_DIRECTORY "${ATOM_MODULE_INC}")
         list(APPEND ATOM_MODULE_INCLUDE_DIRS "$<BUILD_INTERFACE:${ATOM_MODULE_INC}>")
     endif()
@@ -53,10 +52,6 @@ add_library(Marshland::${ATOM_MODULE_TARGET} ALIAS ${ATOM_MODULE_TARGET})
 if(ATOM_MODULE_INCLUDE_DIRS)
     target_include_directories(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         ${ATOM_MODULE_INCLUDE_DIRS})
-endif()
-
-if(TARGET Marshland::PublicHeaders)
-    target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE} Marshland::PublicHeaders)
 endif()
 
 # 必需第三方依赖（ThirdParty 约定：PRIVATE 链接，SYSTEM include）：

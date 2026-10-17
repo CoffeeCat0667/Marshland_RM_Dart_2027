@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <pthread.h>
 
@@ -40,6 +41,24 @@ public:
             return EINVAL;
         }
         return sigwait(&exit_signals_, &signal);
+    }
+
+    // EAGAIN means the deadline elapsed without an exit signal.
+    int WaitFor(int& signal, std::chrono::nanoseconds timeout) const noexcept
+    {
+        if (!prepared_ || timeout.count() < 0) {
+            return EINVAL;
+        }
+        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(timeout);
+        const timespec duration{
+            static_cast<time_t>(seconds.count()),
+            static_cast<long>((timeout - seconds).count())};
+        const int received = sigtimedwait(&exit_signals_, nullptr, &duration);
+        if (received < 0) {
+            return errno;
+        }
+        signal = received;
+        return 0;
     }
 
 private:

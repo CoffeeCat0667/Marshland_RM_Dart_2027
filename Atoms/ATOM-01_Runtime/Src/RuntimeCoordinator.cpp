@@ -1,246 +1,181 @@
+// RuntimeCoordinator.cpp - 支持多线程的实现
 #include "RuntimeCoordinator.hpp"
 
-#include <algorithm>
-#include <exception>
-#include <utility>
+#include <iostream>
 
 namespace marshland::runtime {
 
-namespace {
-
-const char* unknownModuleName() noexcept
-{
-    return "unknown-module";
-}
-
-const char* exceptionMessage(const std::exception& exception) noexcept
-{
-    return exception.what() != nullptr ? exception.what() : "module initialization threw an exception";
-}
-
-} // namespace
-
-// toString(RuntimeState) 与 toString(RuntimeStep) 已随类型上提至
-// Atoms/Public/ILifecycle.hpp（inline 实现），见 ATOM01-BUG-007。
-
-bool RuntimeStartResult::succeeded() const noexcept
-{
-    return state == RuntimeState::Standby;
-}
-
-RuntimeCoordinator::RuntimeCoordinator(RuntimeContext context)
-    : context_(std::move(context))
-{
-}
-
-RuntimeCoordinator::~RuntimeCoordinator()
-{
+RuntimeCoordinator::~RuntimeCoordinator() {
     shutdown();
 }
 
-bool RuntimeCoordinator::addModule(ModuleRegistration registration)
-{
+void RuntimeCoordinator::registerModule(ModuleRegistration registration) {
     if (state_ != RuntimeState::Created) {
-        registration_error_ = ModuleRegistrationError::IllegalState;
-        return false;
-    }
-    if (registration.module == nullptr) {
-        registration_error_ = ModuleRegistrationError::NullModule;
-        return false;
-    }
-
-    // ATOM01-BUG-009：不再拒绝重复 RuntimeStep。设计文档第 5~11 条按"能力域"列举
-    // 步骤，同一能力域天然可能由多个 ATOM 适配器共同承担（例如
-    // InitializeSbusAndVision = ATOM-03 + ATOM-12，StartHttpAndWebSocket =
-    // ATOM-16 + ATOM-17），因此采用"1 步骤 : N 模块"。
-    //
-    // 插入点是第一个 step 严格大于本模块的位置，所以同一步骤内保持注册先后顺序
-    // （FIFO），不同步骤仍按 RuntimeStep 升序执行；关闭/回滚逆序遍历即为正确顺序。
-    RegisteredModule candidate{
-        registration.step,
-        registration.required,
-        std::move(registration.module),
-        false,
-    };
-
-    const auto insertion_point = std::find_if(
-        modules_.begin(),
-        modules_.end(),
-        [&candidate](const RegisteredModule& existing) {
-            return static_cast<int>(existing.step) > static_cast<int>(candidate.step);
-        });
-    modules_.insert(insertion_point, std::move(candidate));
-
-    registration_error_ = ModuleRegistrationError::None;
-    return true;
-}
-
-ModuleRegistrationError RuntimeCoordinator::lastRegistrationError() const noexcept
-{
-    return registration_error_;
-}
-
-std::size_t RuntimeCoordinator::registeredModuleCount() const noexcept
-{
-    // ATOM01-BUG-011：单一真相就是 modules_ 本身，不做第二份计数。
-    return modules_.size();
-}
-
-RuntimeStartResult RuntimeCoordinator::currentResult() const noexcept
-{
-    RuntimeStartResult result{};
-    result.state = state_;
-    try {
-        result.steps = step_results_;
-    } catch (...) {
-        // ATOM01-BUG-004：诊断快照复制失败时退化为"只有状态"，绝不外泄异常。
-        result.steps.clear();
-    }
-    return result;
-}
-
-RuntimeStartResult RuntimeCoordinator::start() noexcept
-{
-    // 区分"非 Created 状态下的既有结果快照"和"真正的启动序列"：
-    // 只有后者失败时才需要回滚并释放已启动模块。
-    bool sequence_started = false;
-
-    try {
-        // ATOM01-BUG-003（2026-09-27 裁决收紧）：**不支持运行中重启**。
-        //
-        // 原先允许 Stopped -> Created 重启，与产品裁决（见 ATOM-02 的
-        // ATOM02-BUG-015）冲突：SystemMode 一旦离开 UNINITIALIZED 就不可回到可
-        // 初始化状态（Interface.md §7.1 无回到"初始化中"的边），PEF.md §8.3 第 3 条
-        // 亦要求急停人工解除后"不需要重新初始化"。若保留该能力，会出现"硬件已重新
-        // 初始化、业务侧并未重新初始化"的半初始化状态。
-        //
-        // 因此只有 Created（从未启动）会执行启动序列；Stopped / InitFailed /
-        // Standby 等状态一律返回既有快照，不重新初始化。运行中需要重新初始化
-        // 只能重启进程。
-        if (state_ != RuntimeState::Created) {
-            return RuntimeStartResult{state_, step_results_};
-        }
-
-        sequence_started = true;
-        state_ = RuntimeState::Starting;
-        step_results_.clear();
-        step_results_.reserve(modules_.size());
-
-        for (auto& registered : modules_) {
-            StepResult step_result{};
-            step_result.step = registered.step;
-            step_result.required = registered.required;
-            step_result.attempted = true;
-
-            try {
-                step_result.result = registered.module->initialize(context_);
-                if (step_result.result.module_name.empty()) {
-                    const char* module_name = registered.module->name();
-                    step_result.result.module_name = module_name != nullptr
-                        ? module_name
-                        : unknownModuleName();
-                }
-            } catch (const std::exception& exception) {
-                step_result.result = exceptionResult(registered.module->name(), exceptionMessage(exception));
-            } catch (...) {
-                step_result.result = exceptionResult(
-                    registered.module->name(),
-                    "module initialization threw an unknown exception");
-            }
-
-            const bool step_succeeded = step_result.result.success;
-            const bool step_required = step_result.required;
-            registered.started = step_succeeded;
-
-            // reserve() 已保证容量，且 StepResult 各成员均为 nothrow-move，
-            // 因此这一步不再产生"扩容分配"或"元素拷贝"失败。
-            step_results_.push_back(std::move(step_result));
-
-            if (step_required && !step_succeeded) {
-                failStart();
-                return RuntimeStartResult{state_, step_results_};
-            }
-        }
-
-        state_ = RuntimeState::Standby;
-        return RuntimeStartResult{state_, step_results_};
-    } catch (...) {
-        // ATOM01-BUG-004：reserve()/push_back()/结果快照拷贝等分配点失败时，
-        // 统一回滚为 InitFailed 并释放已初始化模块。本函数声明为 noexcept，
-        // 异常绝不允许外泄到调用方。
-        if (sequence_started) {
-            failStart();
-        }
-        return currentResult();
-    }
-}
-
-void RuntimeCoordinator::shutdown() noexcept
-{
-    if (state_ == RuntimeState::Stopped || state_ == RuntimeState::Created) {
-        if (state_ == RuntimeState::Created) {
-            state_ = RuntimeState::Stopped;
-        }
+        std::cerr << "[Runtime] Cannot register module after start()" << std::endl;
         return;
     }
 
+    RegisteredModule module;
+    module.name = std::move(registration.name);
+    module.init = std::move(registration.init);
+    module.run = std::move(registration.run);
+    module.cleanup = std::move(registration.cleanup);
+    modules_.push_back(std::move(module));
+}
+
+void RuntimeCoordinator::registerModule(const std::string& name,
+                                       std::function<bool()> init,
+                                       std::function<void()> cleanup) {
+    registerModule({name, std::move(init), nullptr, std::move(cleanup)});
+}
+
+void RuntimeCoordinator::registerModule(const std::string& name,
+                                       std::function<bool()> init,
+                                       std::function<void(std::atomic<bool>&)> run,
+                                       std::function<void()> cleanup) {
+    registerModule({name, std::move(init), std::move(run), std::move(cleanup)});
+}
+
+bool RuntimeCoordinator::tryInit(RegisteredModule& module) noexcept {
+    std::cout << "[Runtime] Initializing " << module.name << "..." << std::endl;
+
+    try {
+        if (!module.init || !module.init()) {
+            errors_.push_back({module.name, "init returned false"});
+            return false;
+        }
+        module.initialized = true;
+        return true;
+    } catch (const std::exception& e) {
+        errors_.push_back({module.name, std::string("exception: ") + e.what()});
+        return false;
+    } catch (...) {
+        errors_.push_back({module.name, "unknown exception"});
+        return false;
+    }
+}
+
+void RuntimeCoordinator::startThreads() noexcept {
+    std::cout << "[Runtime] Starting threads..." << std::endl;
+
+    running_ = true;
+
+    for (auto& module : modules_) {
+        if (!module.initialized || !module.run) {
+            continue;  // 跳过未初始化或无 run 函数的模块
+        }
+
+        try {
+            threads_.emplace_back([this, &module]() {
+                std::cout << "[Runtime] Thread started: " << module.name << std::endl;
+                try {
+                    module.run(running_);
+                } catch (const std::exception& e) {
+                    std::cerr << "[Runtime] Thread " << module.name
+                             << " exception: " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "[Runtime] Thread " << module.name
+                             << " unknown exception" << std::endl;
+                }
+                std::cout << "[Runtime] Thread exited: " << module.name << std::endl;
+            });
+        } catch (...) {
+            std::cerr << "[Runtime] Failed to start thread: " << module.name << std::endl;
+        }
+    }
+
+    std::cout << "[Runtime] " << threads_.size() << " threads started" << std::endl;
+}
+
+void RuntimeCoordinator::stopThreads() noexcept {
+    if (threads_.empty()) {
+        return;
+    }
+
+    std::cout << "[Runtime] Stopping threads..." << std::endl;
+
+    running_ = false;
+
+    // 等待所有线程退出
+    for (auto& t : threads_) {
+        try {
+            if (t.joinable()) {
+                t.join();
+            }
+        } catch (...) {
+            // 忽略 join 异常
+        }
+    }
+
+    threads_.clear();
+    std::cout << "[Runtime] All threads stopped" << std::endl;
+}
+
+void RuntimeCoordinator::rollback() noexcept {
+    std::cout << "[Runtime] Rollback: cleaning up initialized modules..." << std::endl;
+
+    // 反序清理已初始化的模块
+    for (auto it = modules_.rbegin(); it != modules_.rend(); ++it) {
+        if (!it->initialized || !it->cleanup) {
+            continue;
+        }
+
+        try {
+            std::cout << "[Runtime] Cleaning up " << it->name << std::endl;
+            it->cleanup();
+            it->initialized = false;
+        } catch (const std::exception& e) {
+            std::cerr << "[Runtime] Cleanup error for " << it->name
+                     << ": " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[Runtime] Cleanup error for " << it->name << std::endl;
+        }
+    }
+}
+
+bool RuntimeCoordinator::start() noexcept {
+    if (state_ != RuntimeState::Created) {
+        std::cerr << "[Runtime] Already started or stopped" << std::endl;
+        return state_ == RuntimeState::Standby;
+    }
+
+    state_ = RuntimeState::Starting;
+    errors_.clear();
+
+    // 第一阶段：顺序初始化所有模块
+    for (auto& module : modules_) {
+        if (!tryInit(module)) {
+            state_ = RuntimeState::InitFailed;
+            rollback();
+            return false;
+        }
+    }
+
+    // 第二阶段：启动所有线程
+    startThreads();
+
+    // 全部成功
+    state_ = RuntimeState::Standby;
+    std::cout << "[Runtime] All modules started successfully" << std::endl;
+    return true;
+}
+
+void RuntimeCoordinator::shutdown() noexcept {
+    if (state_ == RuntimeState::Stopped || state_ == RuntimeState::Created) {
+        return;
+    }
+
+    std::cout << "[Runtime] Shutting down..." << std::endl;
     state_ = RuntimeState::ShuttingDown;
-    for (auto it = modules_.rbegin(); it != modules_.rend(); ++it) {
-        if (!it->started || it->module == nullptr) {
-            continue;
-        }
-        try {
-            it->module->shutdown();
-        } catch (...) {
-            // shutdown() is a best-effort, noexcept lifecycle boundary. A
-            // later diagnostic layer may report failures from the adapter.
-        }
-        it->started = false;
-    }
+
+    // 第一步：停止所有线程
+    stopThreads();
+
+    // 第二步：反序清理所有模块
+    rollback();
+
     state_ = RuntimeState::Stopped;
-}
-
-RuntimeState RuntimeCoordinator::state() const noexcept
-{
-    return state_;
-}
-
-const std::vector<StepResult>& RuntimeCoordinator::stepResults() const noexcept
-{
-    return step_results_;
-}
-
-const RuntimeContext& RuntimeCoordinator::context() const noexcept
-{
-    return context_;
-}
-
-ModuleInitResult RuntimeCoordinator::exceptionResult(const char* module_name,
-                                                     const char* message) noexcept
-{
-    ModuleInitResult result{};
-    result.success = false;
-    result.module_name = module_name != nullptr ? module_name : unknownModuleName();
-    result.error_message = message != nullptr ? message : "module initialization failed";
-    return result;
-}
-
-void RuntimeCoordinator::failStart() noexcept
-{
-    state_ = RuntimeState::InitFailed;
-    for (auto it = modules_.rbegin(); it != modules_.rend(); ++it) {
-        if (!it->started || it->module == nullptr) {
-            continue;
-        }
-        try {
-            it->module->shutdown();
-        } catch (...) {
-            // Preserve INIT_FAILED and continue releasing other modules.
-        }
-        it->started = false;
-    }
+    std::cout << "[Runtime] Stopped" << std::endl;
 }
 
 } // namespace marshland::runtime
-
-

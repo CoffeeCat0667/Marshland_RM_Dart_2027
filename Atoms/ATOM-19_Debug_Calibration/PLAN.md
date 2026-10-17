@@ -1,4 +1,4 @@
-﻿# ATOM-19 调试与校准实现方案
+# ATOM-19 调试与校准实现方案
 
 ## 1. 目标与边界
 
@@ -59,7 +59,13 @@ ATOM-19_Debug_Calibration/
 
 ## 5. CMake 组织方案
 
-本目录提供模块级 `INTERFACE` 库目标 `atom19_debug_calibration`，用于被上层工程通过 `add_subdirectory()` 纳入并链接。当前模块尚无实现源文件，因此不在本目录单独编译；后续出现源文件时，可将目标调整为普通静态/对象库，同时保持目标名和公共包含目录稳定。C++ 标准、编译器选项、平台检查继续由上层工程统一管理。
+本目录 `CMakeLists.txt` 已按上层共享模块模板初始化（与上层 `NewVersion/CMakeLists.txt` 注释描述的统一模块契约一致）：
+
+- 模块目标名固定为 `atom_19_debug_calibration`，对外以别名 `Marshland::atom_19_debug_calibration` 链接；
+- 无 `Src/` 源码时建 `INTERFACE` 库占位，有源码时自动建 `STATIC` 库（参与增量编译），目标名与公共包含目录保持稳定；
+- 公共包含目录为本目录（header-only 布局）、`Inc/` 和同级共享 `../Public`（按目录存在性添加）；
+- 本文件不定义 `project()`、不设置编译器/平台/C++ 标准/编译选项，全部由上层工程统一管理（严格 C++23 基线，GCC 13+/Clang 17+，ARM 平台守卫，`-Wall -Wextra -Wpedantic`）；
+- 上层通过 `add_subdirectory(Atoms)` 聚合各 Atom 到 `marshland_atoms`；共享契约头目标 `Marshland::PublicHeaders` 在 `Atoms/` 之前创建，本模块如需使用公共契约头，应在 `if(TARGET Marshland::PublicHeaders)` 守卫内链接该目标。
 
 ## 6. 验收与验证计划
 
@@ -67,11 +73,13 @@ ATOM-19_Debug_Calibration/
 - 接口测试：查询接口不产生目标下发；各类查询均能返回有效快照或明确错误。
 - 流程测试：单步校准可产生独立的进行中、成功、失败结果。
 - 安全测试：急停、故障锁定、未初始化时执行请求被拒绝；未知校准项目不会被擅自执行。
-- 构建验证：在符合上层工程要求的 Ubuntu ARM/aarch64 环境中由上层 CMake 配置和编译；本目录不进行独立平台配置。
+- 构建验证：在符合上层工程要求的 Ubuntu ARM/aarch64 环境中由上层 CMake 配置和编译（WSL aarch64 交叉编译或目标主机本地编译）；本目录不进行独立平台配置。
+- 单元测试（后续）：参照上层 `MARSHLAND_BUILD_TESTS` 选项下既有模式（如 `marshland_atom03_tests`、`marshland_atom15_tests`），新增 `marshland_atom19_tests` 并注册 `MARSHLAND_ATOM19_CASES`；交叉编译时经 `qemu-aarch64` 执行。测试目标的新增需修改上层 `CMakeLists.txt`，超出本目录权限，届时需向集成方提出。
 
 ## 7. 待后续确认事项
 
 - 具体调试数据结构、设备标识和时间戳/序列号约定；
 - Config 中校准项目、参数范围和判据的最终定义；
 - 机构控制器授权接口及异步结果回调/事件总线形式；
-- 上层工程纳入本模块的 `add_subdirectory()` 路径和链接关系。
+- ~~上层工程纳入本模块的路径与链接关系~~（已确认：经上层 `add_subdirectory(Atoms)` 聚合，以 `Marshland::atom_19_debug_calibration` 链接）；
+- 本模块是否需要依赖 `Marshland::PublicHeaders` 共享契约头，以及相应 CMake 链接改动的授权。
