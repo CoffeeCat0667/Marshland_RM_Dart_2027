@@ -13,6 +13,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(__linux__)
@@ -20,6 +22,7 @@
 #  include <poll.h>
 #  include <sys/ioctl.h>
 #  include <sys/socket.h>
+#  include <sys/wait.h>
 #  include <unistd.h>
 #  include <cerrno>
 #  include <system_error>
@@ -93,6 +96,73 @@ std::int16_t toSlotValue(double output) noexcept
     return static_cast<std::int16_t>(output);
 }
 
+// ---------------------------------------------------------------------------
+// 接口拉起（方案 A：直接调用 ip 命令；波特率硬编码）
+//
+// 等价于用户指定的三条命令，用 && 串联：
+//   ip link set <if> down
+//   ip link set <if> type can bitrate 1000000 fd off
+//   ip link set <if> up
+// 顺序不可调换：内核禁止在 IFF_UP 状态下改位时序（EBUSY）。
+// && 保证任一命令失败即中止，不留下"半配置"状态。
+//
+// 前提：进程需要 CAP_NET_ADMIN（root，或 setcap cap_net_admin+ep，或 systemd
+// AmbientCapabilities）。缺权限时 ip 返回非零，本函数如实返回失败。
+// ---------------------------------------------------------------------------
+constexpr unsigned kBitrateBps = 1000000U;
+
+// 只接受 [A-Za-z0-9_.-] 且长度 <= 15（IFNAMSIZ-1）。
+// 这是**安全边界**：接口名会被拼进 system() 的命令行，必须拒绝任何 shell 元字符。
+bool isValidInterfaceName(const char* name) noexcept
+{
+    if (name == nullptr) {
+        return false;
+    }
+    std::size_t length = 0;
+    for (; name[length] != '\0'; ++length) {
+        if (length >= 15U) {
+            return false;
+        }
+        const char c = name[length];
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || (c == '_') || (c == '-') ||
+                             (c == '.');
+        if (!allowed) {
+            return false;
+        }
+    }
+    return length > 0U;
+}
+
+CanResult bringUpInterface(const char* interface_name) noexcept
+{
+    if (!isValidInterfaceName(interface_name)) {
+        return failure(CanError::PARAM_INVALID, EINVAL);
+    }
+
+    char command[256];
+    const int written = std::snprintf(
+        command, sizeof(command),
+        "ip link set %s down && ip link set %s type can bitrate %u fd off && ip link set %s up",
+        interface_name, interface_name, kBitrateBps, interface_name);
+    if (written < 0 || static_cast<std::size_t>(written) >= sizeof(command)) {
+        return failure(CanError::PARAM_INVALID, EINVAL);
+    }
+
+    const int status = std::system(command);
+    if (status == -1) {
+        return failure(CanError::UNSUPPORTED, errno);  // 无法启动 shell
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        // 接口配置失败，最常见原因是缺少 CAP_NET_ADMIN，或接口不存在（驱动未加载）。
+        // CanError 没有"链路配置失败"这一项（加一项要改跨 ATOM 公共契约），
+        // 故用 NOT_OPEN 表示"传输层未能就绪"，system_errno 携带 ip 的退出码
+        // （1 = 执行失败，2 = 命令行错误）。
+        return failure(CanError::NOT_OPEN, WIFEXITED(status) ? WEXITSTATUS(status) : 0);
+    }
+    return success();
+}
+
 #endif
 
 } // namespace
@@ -155,6 +225,13 @@ can::CanResult CanMotorControl::start(
             !std::isfinite(params.min)) {
             return failure(CanError::PARAM_INVALID, EINVAL);
         }
+    }
+
+    // 先把接口拉起（down -> 设位时序 -> up），再打开 socket。
+    // 接口处于 down 时 bind() 也能成功，但收不到任何流量，所以必须在 open 之前。
+    const CanResult configured = bringUpInterface(interface_name);
+    if (configured.failed) {
+        return configured;
     }
 
     const CanResult opened = openSocket(interface_name);

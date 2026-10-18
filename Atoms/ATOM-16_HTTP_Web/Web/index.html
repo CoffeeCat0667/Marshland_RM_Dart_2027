@@ -69,14 +69,14 @@
       <div class="af-track"><div class="af-fill" id="afFill"></div></div>
     </section>
 
-    <!-- 摇杆速度控制（仅纵向） -->
+    <!-- 摇杆速度控制（YAW 横向，其余纵向） -->
     <section class="card span-4">
-      <div class="card-title">摇杆速度控制<em>STICK · LINEAR MAP</em><span class="badge">仅纵向 · 松手自动回中</span></div>
+      <div class="card-title">摇杆速度控制<em>STICK · LINEAR MAP</em><span class="badge">YAW 横向 · 松手自动回中</span><button class="ctl ch5" id="ch5Btn">控制权 → WEB</button></div>
       <div class="joy-grid">
 
         <div class="joy-unit">
           <div class="joy-head"><span>蓄力</span><em>CHARGE</em></div>
-          <div class="joy" data-max="5000" data-unit="rpm" data-name="蓄力">
+          <div class="joy" data-max="1000" data-unit="rpm" data-name="蓄力">
             <div class="joy-track-line"></div>
             <div class="joy-tick t1"></div>
             <div class="joy-tick t2"></div>
@@ -88,7 +88,7 @@
 
         <div class="joy-unit">
           <div class="joy-head"><span>变力</span><em>FORCE</em></div>
-          <div class="joy" data-max="5000" data-unit="rpm" data-name="变力">
+          <div class="joy" data-max="1000" data-unit="rpm" data-name="变力">
             <div class="joy-track-line"></div>
             <div class="joy-tick t1"></div>
             <div class="joy-tick t2"></div>
@@ -99,8 +99,8 @@
         </div>
 
         <div class="joy-unit">
-          <div class="joy-head"><span>YAW</span><em>纵向</em></div>
-          <div class="joy" data-max="5000" data-unit="rpm" data-name="YAW">
+          <div class="joy-head"><span>YAW</span><em>横向</em></div>
+          <div class="joy joy-h" data-axis="x" data-max="1000" data-unit="rpm" data-name="YAW">
             <div class="joy-track-line"></div>
             <div class="joy-tick t1"></div>
             <div class="joy-tick t2"></div>
@@ -112,7 +112,7 @@
 
         <div class="joy-unit">
           <div class="joy-head"><span>换弹</span><em>RELOAD</em></div>
-          <div class="joy" data-max="5000" data-unit="rpm" data-name="换弹">
+          <div class="joy" data-max="1000" data-unit="rpm" data-name="换弹">
             <div class="joy-track-line"></div>
             <div class="joy-tick t1"></div>
             <div class="joy-tick t2"></div>
@@ -123,7 +123,7 @@
         </div>
 
       </div>
-      <p class="joy-note">摇杆纵向偏移量 → 速度值为<b>线性映射</b>：value = offset / radius × max；满偏 = ±5000 rpm。当前为演示模式，未接入真实控制接口。</p>
+      <p class="joy-note">摇杆偏移量（YAW 横向，其余纵向）→ 速度值为<b>线性映射</b>：value = offset / radius × max；满偏 = ±1000 rpm。</p>
     </section>
 
     <!-- 电机状态（实时：转速 / 温度） -->
@@ -141,16 +141,10 @@
 
     <!-- 手动控制 -->
     <section class="card span-2">
-      <div class="card-title">手动控制<em>MANUAL</em><span class="badge">仅手动/调试模式</span></div>
+      <div class="card-title">手动控制<em>MANUAL</em></div>
       <div class="btn-grid">
-        <button class="ctl">蓄力启动</button>
-        <button class="ctl">蓄力停止</button>
-        <button class="ctl">蓄力回零</button>
-        <button class="ctl">换弹抬起</button>
-        <button class="ctl">换弹下降</button>
-        <button class="ctl">供弹一次</button>
-        <button class="ctl danger">发射一次</button>
-        <button class="ctl warn-outline">清除停止标志</button>
+        <button class="ctl" id="btnFeed">供弹一次</button>
+        <button class="ctl danger" id="btnFire">发射一次</button>
       </div>
     </section>
 

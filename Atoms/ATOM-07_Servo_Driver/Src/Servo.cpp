@@ -119,6 +119,33 @@ struct Pca9685ServoDriver::Impl final {
         address = value;
     }
 
+    // 裸写：不拼寄存器地址字节（SWRST 这类"地址后直接跟命令字"的事务必须用它）。
+    bool writeBytes(const std::uint8_t* data, std::size_t size) noexcept
+    {
+        if (fd < 0) {
+            setError(error, "IIC device is not open");
+            return false;
+        }
+        std::size_t written = 0U;
+        while (written < size) {
+            const ssize_t result = ::write(fd, data + written, size - written);
+            if (result < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                const int saved = errno;
+                setErrnoError(error, "IIC write failed", saved);
+                return false;
+            }
+            if (result == 0) {
+                setError(error, "IIC write returned 0 bytes");
+                return false;
+            }
+            written += static_cast<std::size_t>(result);
+        }
+        return true;
+    }
+
     bool writeRegs(std::uint8_t reg, const std::uint8_t* data, std::size_t size) noexcept
     {
         if (fd < 0) {
@@ -169,11 +196,12 @@ struct Pca9685ServoDriver::Impl final {
 
     bool initialize(std::uint8_t device_address) noexcept
     {
-        // 1) 软件复位（通用呼叫 0x00 ← 0x06），清除上一次运行残留。
+        // 1) 软件复位（通用呼叫 0x00 后只跟命令字 0x06，不能带寄存器地址字节），
+        //    清除上一次运行残留。失败只记录、不中止：它不影响后续配置的正确性。
         selectAddress(kGeneralCallAddress);
         const std::uint8_t reset_command = kSoftwareResetCommand;
-        if (!writeRegs(0x00, &reset_command, 1U)) {
-            return false;
+        if (!writeBytes(&reset_command, 1U)) {
+            setError(error, "SWRST failed");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 

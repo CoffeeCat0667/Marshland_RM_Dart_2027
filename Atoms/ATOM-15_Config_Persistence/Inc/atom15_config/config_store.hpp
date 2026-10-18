@@ -22,6 +22,9 @@ enum class UpdateSource : std::uint8_t { NONE, SBUS, WEB, AUTO };
 enum class UpdateMode : std::uint8_t { UNINITIALIZED, INITIALIZING, INIT_FAILED, STANDBY, MANUAL, AUTO_FIRE, DEBUG, CALIBRATION, RECOVERY, SOFTWARE_ESTOP, FAULT };
 enum class ConfigError : std::uint8_t { OK, FILE_NOT_FOUND, FILE_IO, INVALID_JSON, INVALID_SCHEMA, NOT_LOADED, MISSING, INVALID_TYPE, OUT_OF_RANGE, NOT_AUTHORIZED, PERSISTENCE_FAILED, LIMIT_REACHED, NOT_FOUND };
 
+// 按值查询的结果状态；非 OK 时 out 保持调用前的值不变。
+enum class ConfigStatus : std::uint8_t { OK, NOT_LOADED, MISSING, INVALID_TYPE };
+
 struct ConfigDiagnostic final { std::string key; std::string message; bool warning{false}; };
 struct ConfigLoadResult final { bool success{false}; ConfigError error{ConfigError::NOT_LOADED}; std::vector<ConfigDiagnostic> diagnostics; };
 
@@ -45,12 +48,26 @@ public:
     ConfigStore(const ConfigStore&) = delete;
     ConfigStore& operator=(const ConfigStore&) = delete;
 
-    // 加载 / 热加载；只有完整校验通过后才替换内存快照。
+    // 加载 / 重载；只有完整校验通过后才替换内存快照。
+    // 重载就是再次调用 load(同一路径)——路径由持有者自己记住。
     ConfigLoadResult load(const std::filesystem::path& path);
-    ConfigLoadResult reload();
-    std::filesystem::path path() const;
-    std::vector<ConfigDiagnostic> diagnostics() const;
-    void setChangeCallback(ChangeCallback callback);
+
+    // ---- 按值查询（只读内存快照、不做 I/O、任意线程可调）------------------
+    // path 语法："a.b" 或 "a[3].b"（每段最多一个下标）。成功时 out 拿到的是
+    // 快照值的副本；JSON null 以 std::monostate 返回（OK），数组/对象本身不可
+    // 用 get 取（返回 INVALID_TYPE），用 getArraySize + 索引路径访问元素。
+    ConfigStatus get(const char* path, ConfigValue& out) const noexcept;
+
+    // 类型化包装：语义与 get 完全一致，只是省掉调用方的 variant 判定。
+    // 消费方优先用这四个；get 留给枚举字符串与尚未类型化的值。
+    ConfigStatus getInt(const char* path, std::int64_t& out) const noexcept;
+    ConfigStatus getDouble(const char* path, double& out) const noexcept;
+    ConfigStatus getBool(const char* path, bool& out) const noexcept;
+    ConfigStatus getString(const char* path, std::string& out) const noexcept;
+
+    ConfigStatus getArraySize(const char* path, std::uint64_t& out) const noexcept;
+    // 每次成功 load 或热更新自增；0 表示从未加载成功。消费方据此决定是否重读。
+    std::uint64_t configVersion() const noexcept;
 
     // 运行时更新：仅 WEB 来源 + MANUAL/DEBUG 模式；候选快照经同一套校验后才生效。
     // 批量提交是原子的：任一条不合法则整批不生效、不落盘、版本不变；

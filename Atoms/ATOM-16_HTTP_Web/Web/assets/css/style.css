@@ -233,6 +233,18 @@ body {
 .joy-tick.t1 { top: 50%; margin-top: -1px; width: 20px; background: #c3ccd8; }
 .joy-tick.t2 { display: none; }
 
+/* YAW 横向摇杆：胶囊轨道转 90°，只可横向拖动 */
+.joy-h { width: 168px; height: 92px; }
+.joy-h .joy-track-line {
+  left: 12px; right: 12px; top: 50%; bottom: auto;
+  width: auto; height: 2px; margin-left: 0; margin-top: -1px;
+}
+.joy-h .joy-tick {
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 2px; height: 14px; margin-top: 0;
+}
+.joy-h .joy-tick.t1 { width: 2px; height: 20px; margin-top: 0; }
+
 .joy-knob {
   position: absolute; left: 50%; top: 50%;
   width: 56px; height: 56px;
@@ -321,7 +333,7 @@ body {
 @keyframes softPulse { 50% { opacity: 0.55; } }
 
 /* ---------- 控制按钮 ---------- */
-.btn-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.btn-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .ctl {
   font-family: inherit;
   font-size: 13px; letter-spacing: 0.5px;
@@ -347,6 +359,13 @@ body {
   background: transparent;
 }
 .ctl.warn-outline:hover { background: var(--warn-soft); }
+/* 摇杆卡内的控制权切换按钮 */
+.ctl.ch5 {
+  margin-left: 8px;
+  font-size: 11px; letter-spacing: 0.5px;
+  padding: 3px 10px;
+  border-radius: 99px;
+}
 
 /* ---------- 急停 ---------- */
 .estop-card { border-color: #fecaca; }

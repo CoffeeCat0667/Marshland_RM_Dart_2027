@@ -532,7 +532,8 @@ ARM 增量编译与严格警告检查通过。 |
 | 2.8 | 2026-10-16 | 线程模型定稿为**装配层自持、每模块一条**：回退 T2（模块内 `std::thread`/`condition_variable`/`atomic` 与 `tickOnce`/`runLoop`/`startWorker`/`stopWorker` 全部删除；`tick(now_us)` 重新公开；`configure`/`reset` 只做配置装载与目标撤销；撤销 `tick_period_us` 与两个周期键读取）。修订 `Rule/ATOM8ConnectProject.md` 新增 §9 工作线程接入约定（分工、参考实现、6 条硬约束、与 AtomIntegration 的关系）。ARM 增量编译与严格警告零警告通过。 |
 | 2.7 | 2026-10-16 | 按"纯逻辑 ATOM 只暴露装配部分"收窄对外面：配置类型下沉 `Src/`（私有头，不在 include 路径）、`ChargeController` 改持 `unique_ptr<ChargeConfig>`、`configure/reset` 转 private+friend；公开头 5→4、公开方法 8→6。ATOM-08 目标编译通过、严格警告零警告；发现 **ATOM-16 因未迁移新 SBUS/CAN 契约导致 `marshland` 链接失败**（已登记 2026-10-16-ATOM-08.md）。 |
 | 2.3 | 2026-10-14 | 按用户选项 A 定稿：§1.2/§4.1 明确 ATOM-08 **不读取 `gpio.*`**，限位与回零判据全部经窄端口 `ILimitSwitchState` 由 ATOM-06 提供；`gpio` 段缺失不再视为 ATOM-08 阻塞；§4.2 更新核对结论与已落地键表；§12 自检清单增设"未读取 `gpio.*`"项。**仍未创建或修改任何实现代码。** |
-| 3.0 | 2026-10-16 | 新增 §16 执行器归属总表（用户裁决）：固定五个机构 ↔ 执行器 ↔ id/节点/通道；**供弹机构由"位置模型待定"改为确定值**（1× PWM 舵机，PCA9685A/IIC，50 Hz，id=6，待机 90°/供弹 70°）。**未修改任何实现代码，未改动其他 `PLAN.md`。** |
+| 3.0 | 2026-10-16 | 新增 §16 执行器归属总表（用户裁决）：固定五个机构 ↔ 执行器 ↔ id/节点/通道；**供弹机构由"位置模型待定"改为确定值**（1× PWM 舵机，PCA9685A/IIC，50 Hz，id=6，待机 90°/供弹 70°；**该角度后经 3.1 更正为 165°/180°**）。**未修改任何实现代码，未改动其他 `PLAN.md`。** |
+| 3.1 | 2026-10-17 | 供弹舵机角度更正为 **待机 165° / 供弹 180°**（以代码 `kFeedStandbyDeg` / `kFeedActionDeg` 为准）；同步 §16 表、§16.1 语义映射、§17 CH13 行。**未修改任何代码。** |
 
 ---
 
@@ -549,15 +550,15 @@ ARM 增量编译与严格警告检查通过。 |
 |---|---|---|---|---|
 | **蓄力** charge（ATOM-08） | 2× CAN 电机（M3508，`VELOCITY` 恒速） | `motor[].role == "charge_left"` / `"charge_right"` | 右蓄力 = **id 1 / node 0x201**；左蓄力 = **id 2 / node 0x202** | `charge.charge_speed_rpm` = `charge.home_speed_rpm` = 5000 rpm；SBUS 手感通道（非执行器）CH2 整体 / CH8 左 / CH9 右，CH2 非零时优先覆盖 |
 | **换弹** reload（ATOM-10） | 2× CAN 电机（同一机构左右两台 M3508，`VELOCITY`） | `IReloadMotorPair::submitVelocityRpm(ReloadSide::Left/Right, rpm)` | 右 = **id 3 / node 0x203**；左 = **id 4 / node 0x204** | 幅值 `reload.speed_rpm` = 2000 rpm；方向由代码约定：抬起左 +/右 −，放下左 −/右 + |
-| **供弹** feed（ATOM-10） | **1× PWM 舵机**（PCA9685A / IIC，50 Hz） | `IFeedActuator::moveToReloadPosition()` / `moveToStandbyPosition()`（写入实现归装配层，原路径 ATOM-07） | **id = 6**（执行器编号；见 §16.2 注 1） | **待机 90°**、**供弹 70°** |
+| **供弹** feed（ATOM-10） | **1× PWM 舵机**（PCA9685A / IIC，50 Hz） | `IFeedActuator::moveToReloadPosition()` / `moveToStandbyPosition()`（写入实现归装配层，原路径 ATOM-07） | **id = 6**（执行器编号；见 §16.2 注 1） | **待机 165°**、**供弹 180°** |
 | **变力** force（ATOM-09） | 1× CAN 电机（闭环 PID，单位 rpm） | `motor[].role == "force"` **唯一匹配** | **id 6 / node 0x206**（`0x1FF` 帧槽位 1） | 输入通道 SBUS **CH12** = `scaled_channels[11]`，窗口 ±2000 rpm；中位 = 零力矩 |
 | **开火** fire（ATOM-11） | 1× PWM 舵机（PCA9685A / IIC，50 Hz） | `servo.channels[]` 中 `mechanism == "FIRE"` 槽位 → `ServoCore::writeTarget(ServoMechanism::Fire, deg)` | **无 id（`id: null`）**；`servo.channels` 数组下标 1、PCA9685 **通道 5** | **待机 90°**、**发射 180°** |
 
 ### 16.1 供弹机构裁决（本轮，覆盖此前"待定"状态）
 
 - 供弹机构为 **1× PWM 舵机**，经 PCA9685A / IIC 驱动，PWM 频率 **50 Hz**（与 `Atoms/Public/Servo.hpp` 固定参数一致）；
-- 执行器编号 **id = 6**；**待机位 90°**、**换弹位（供弹位）70°**；
-- 语义映射：`moveToStandbyPosition()` → 90°，`moveToReloadPosition()` → 70°；
+- 执行器编号 **id = 6**；**待机位 165°**、**供弹位 180°**（2026-10-17 更正，以代码 `kFeedStandbyDeg` / `kFeedActionDeg` 为准）；
+- 语义映射：`moveToStandbyPosition()` → 165°，`moveToReloadPosition()` → 180°；
 - 时序不变：`feed.hold_ms`（100 ms）保持后回待机位，超 `timing.feed_max_action_ms`（1000 ms）判供弹失败；
   写入失败（IIC 失败）不得报告供弹完成；
 - **ATOM-10 自身仍不读取舵机 id 与角度**（`feed.servo_id` 归装配层适配实现方）；
@@ -598,7 +599,7 @@ ARM 增量编译与严格警告检查通过。 |
 | CH8 / CH9 | 蓄力左 / 右电机速度 | 连续量 | ±`660*x` | 写 0x202 / 0x201 |
 | CH10 / CH11 | 换弹左 / 右电机速度 | 连续量 | ±`660*x` | 写 0x204 / 0x203 |
 | CH12 | 变力机构速度 | 连续量（专用映射） | `(raw-1024)*2000/660` → ±2000 rpm | 写 0x206 |
-| CH13 | 供弹请求 | 电平判据 | `scaled < 0` 即供弹请求（用户补充） | **供弹舵机（PCA9685 通道 6 / id=6）：`<0` → 70°，否则 90°** |
+| CH13 | 供弹请求 | 电平判据 | `scaled < 0` 即供弹请求（用户补充） | **供弹舵机（PCA9685 通道 6 / id=6）：`<0` → 180°，否则 165°** |
 | CH14～CH16 | 保留 | — | 不产生输出 | 忽略（不臆造） |
 
 ### 17.1 本轮实现（唯一功能，用户裁决严格限定）
@@ -615,6 +616,9 @@ ARM 增量编译与严格警告检查通过。 |
 - 行为：scaled 值**已是 rpm**（D1）；0 值照写 = **0 rpm 闭环**（D2）；越出 `±6800` **拒绝并保持旧目标**（D6，不钳位）；
   **不提交仲裁意图**（D4）；**不读 `online`**、不做失联处理（D3）；**不读配置**（D10）；
   开火/供弹为**电平判据**（无帧计数、无保持计时）；CH1/CH5/CH6/CH14～16 不产生输出。
+- **符号补偿（2026-10-17 用户裁决）**：`0x202`（蓄力左 / 电机 2）与 `0x203`（换弹右 / 电机 3）
+  写目标前**取负**，其余电机原值下发（`NeedsSignInversion()`，`Src/control_loop.cpp`）。
+  后果：CH2 整体键下发时两蓄力电机反号（0x201 正 / 0x202 负）；CH3 整体键同理（0x204 正 / 0x203 负）。
 - **WEB：已接 `web::WebData`**（Atoms/Public/Web.hpp；16 路通道与 SBUS 同构，含 mutex）→ 与 SBUS 共用同一张通道表。
 - **AUTO：已接 `auto_fire::AutoData`**（Atoms/Public/Auto.hpp），但该结构体**目前没有 `scaled_channels`**
   （只有 `state`/`shot_index`/`active`/`stop_fire`/`online`）→ 本分支不产生输出；字段落地后按同一通道表取数即可，不得臆造。

@@ -88,6 +88,26 @@ setRpm(节点, 目标转速) ──┐
 `start()` / `stop()` 必须串行调用；`stop()` 先 `join()` 再关闭描述符，因此不存在
 「一个线程正在 `recv` 而另一个线程把 fd 关掉」的竞态。
 
+### 接口拉起（`start()` 内、打开 socket 之前）
+
+按用户 2026-10-16 选定的**方案 A**（直接调用 `ip` 命令，波特率硬编码 1000000），
+`start()` 在 `openSocket()` 之前执行一条 `&&` 串联的命令：
+
+```text
+ip link set <if> down
+  && ip link set <if> type can bitrate 1000000 fd off
+  && ip link set <if> up
+```
+
+| 要点 | 说明 |
+|---|---|
+| 顺序不可调换 | 内核禁止在 `IFF_UP` 状态下改位时序（`EBUSY`），必须先 down |
+| 为什么在 open 之前 | 接口处于 down 时 `bind()` 也能成功，但收不到任何流量 |
+| 失败处理 | 任一条失败即中止（`&&`），`start()` 返回 `NOT_OPEN`，`system_errno` 携带 `ip` 退出码（1=执行失败，2=命令行错误） |
+| 注入边界 | 接口名先经 `isValidInterfaceName()` 校验，只允许 `[A-Za-z0-9_.-]` 且长度 ≤ 15；否则 `PARAM_INVALID`，**绝不拼进 shell** |
+| 权限 | 需要 `CAP_NET_ADMIN`（root / `setcap cap_net_admin+ep` / systemd `AmbientCapabilities`） |
+| 副作用 | `down` 会打断该接口上**其它进程**的连接 |
+
 ## 3. C620 反馈帧布局（C620 通行布局）
 
 用户最初口述为「字节 0..1 = 转速」，随后更正为下述通行布局，代码已按此实现。
@@ -136,7 +156,8 @@ PID **不是线程安全的**，必须由单一线程持有；在 ATOM-04 中唯
 | **D-3** | 对外**多出** `state()`、`stop()`、`isRunning()` | 「只保留两个函数」与「暴露一个结构体」不可同时成立——没有读数入口就无法暴露结构体，没有 `stop()` 就无法终止线程。故保留两个功能入口 + 两个必要辅助 |
 | **D-4** | **无安全网** | 用户明确选择「不要安全网，调用方自己负责」。`stop()` 不发零力矩帧；发送失败被静默忽略；急停/失联/堵转职责全部外移。**这是安全倒退，已明确告知** |
 | **D-5** | 发送函数收「节点 ID」而非帧 ID | `0x201~0x206` 是**反馈** ID；真实发送帧只有 `0x200`/`0x1FF`，每帧 4 个 int16 电流槽位。用户表述的「传入 id: 0x201~0x206」按节点 ID 实现，内部经 `queryMotorSlot()` 映射 |
-| **D-7** | 契约物理位置为 `Atoms/Public/Motor.hpp`（用户口述为 `Atoms/Public/Headers/Motor.hpp`） | `Headers/` 目录里目前**只有 `CMakeLists.txt`**，且它不在导出 include 路径上——导出的是 `Atoms/Public/` 本身（`Headers/CMakeLists.txt:30-31`），现有 15 个公共头也全部位于 `Atoms/Public/`。为与约定一致并让 `#include "Motor.hpp"` 直接可用，采用 `Atoms/Public/Motor.hpp`。若确需放在 `Headers/` 下，必须同时把该目录加进 include 路径，会与其余 15 个头不一致 |
+| **D-8** | **接口拉起改为进程内执行**（`ip link set ...` 三条命令经 `system()`） | 推翻旧裁定「bitrate 与采样点由系统 `ip link` 预配，不在 SocketCAN 运行期下发」。按用户选定的方案 A 实现，波特率硬编码 `1000000`。代价：**需要 `CAP_NET_ADMIN`**、运行时依赖 PATH 中的 `ip`（iproute2）、只拿得到单一退出码（无法定位失败的具体命令）、有 fork+exec 开销。缓解：接口名经白名单校验后再拼接，杜绝 shell 注入 |
+| **D-7** | 契约物理位置为 `Atoms/Public/Motor.hpp`（用户口述为 `Atoms/Public/Headers/Motor.hpp`） | **已无争议**：`Atoms/Public/Headers/` 目录已被外部重构删除，`Marshland::PublicHeaders` 现定义于 `Atoms/Public/CMakeLists.txt`，公共头一律直接放在 `Atoms/Public/` 下；`Motor.hpp` 已在 `Atoms/Public/CMakeLists.txt:14` 登记。当前位置与重构后的约定一致 |
 | **D-6** | ~~反馈字节顺序与 C620 通行布局相反~~ | **已解决**：用户 2026-10-16 更正确认采用 C620 通行布局（0..1 角度 / 2..3 转速），代码与文档已同步 |
 
 ### 5.2 与 `ATOM-04_CAN.md` 原子操作/验收条件的差距
@@ -216,6 +237,13 @@ PID **不是线程安全的**，必须由单一线程持有；在 ATOM-04 中唯
    使用时必须结合 `timestamp_us`。
 5. PID 增益由调用方负责；模块不做任何参数合理性判断（除有限性与 `max > min`）。
 6. `state()` 返回的是「最近一帧」的快照，不含丢帧统计。
+7. **接口拉起依赖 `ip` 与 `CAP_NET_ADMIN`**：非 root 且未 `setcap` 时 `start()` 必然失败
+   （返回 `NOT_OPEN`）；PATH 中没有 `ip` 同样失败。三条命令只回报一个退出码，
+   **无法定位是哪一步失败**。
+8. **未设置 `restart-ms`**：CAN 控制器进入 bus-off 后**不会自动恢复**，接口会一直停住
+   直到外部干预或进程重启；而本模块已无任何错误上报通道，这种状态对上层**完全静默**。
+   建议后续用 `ip link set <if> type can restart-ms 100` 补上。
+9. **`start()` 会先 `down` 接口**：若该接口上还有其它进程在用，会被一并打断。
 
 ## 9. 验证状态（实测记录）
 
@@ -229,6 +257,9 @@ PID **不是线程安全的**，必须由单一线程持有；在 ATOM-04 中唯
 | 结构边界与对外面 | 无 `main` / 无横向依赖 / 目标名 / 公共头链接 / **两入口与两结构体声明在 `Atoms/Public/Motor.hpp`** / **`IMotorControl` 端口存在** / **`Motor.hpp` 已登记进 `Marshland::PublicHeaders`** / **模块头未重复声明契约类型** / **实现类确实实现该端口** / 有 atomic+mutex | ✅ 11/11，`fail=0 pending_delete=0` |
 | **CMake 集成（aarch64）** | 探针工程 `add_subdirectory(ATOM-04_CAN_Motor_Control)` + 链接静态库 | ✅ 配置、构建、链接全部成功；产物 `ELF 64-bit ARM aarch64` |
 | **逻辑探针实跑（宿主侧）** | 编译并运行 `probe.cpp` | ✅ `PROBE_ALL_OK`，覆盖：PID 上/下限幅、非法限幅恒 0、**反馈帧布局判定**（字节 2..3 的 `03 E8` 必须解出 rpm=1000，字节 0..1 的 `1F 40` 必须解出角度=8000 —— 偏移量一旦对调即立刻失败）、DLC≠8 拒绝且不改 out、控制帧大端与 `0x1FF` 保留槽强制清零、两个入口的前置校验 |
+| 接口拉起（负路径） | 逻辑探针：`start("probe_no_can0", gains)` | ✅ 返回 `NOT_OPEN`；stderr 出现 `Cannot find device "probe_no_can0"`，证明 `ip` 命令确实被执行 |
+| 接口名注入边界 | 逻辑探针：`start("can0; reboot", gains)` | ✅ 返回 `PARAM_INVALID`，未进入 `system()` |
+| 接口拉起（正路径） | 需要 `CAP_NET_ADMIN` + 真实 `can0` | ❌ **未执行**（本环境 `uid=1000`，`sudo` 需密码） |
 | 真实 CAN 收发 / 线程时序 | vcan 或真机 | ❌ **未执行**。`uid=1000`，`sudo` 需密码，`vcan` 未加载（`vcan.ko` 存在但无法 `modprobe`） |
 | 整树 `cmake` 配置（aarch64，`MARSHLAND_BUILD_TESTS=ON`） | `cmake -S NewVersion -B /tmp/marshland-cfg` | ✅ `Configuring done` / `Generating done`（修正 ATOM-08 目标名后，见 §7.1） |
 | 整树内构建 ATOM-04 目标 | `cmake --build /tmp/marshland-cfg --target atom_04_can_motor_control` | ✅ 3 个 TU 编译 + 静态库链接成功 |

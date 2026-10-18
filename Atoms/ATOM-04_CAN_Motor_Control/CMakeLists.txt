@@ -15,9 +15,7 @@
 #
 # 上层同步状态（2026-10-16 已完成）：
 #   NewVersion/CMakeLists.txt 与 Atoms/CMakeLists.txt 均已引用
-#   Marshland::atom_04_can_motor_control；ATOM-04 的测试目标已注销——现有
-#   Tests/Atom04CanTests.cpp 针对的是已删除的公开面（CanCore/CanRuntimeConfig，
-#   现已被 CanMotorControl 取代）。详见 PLAN.md §7.2。
+#   Marshland::atom_04_can_motor_control；旧 CanCore 测试和公开面已删除。
 # ============================================================================
 
 set(ATOM_MODULE_TARGET atom_04_can_motor_control)
@@ -39,7 +37,6 @@ foreach(ATOM_MODULE_INC
 endforeach()
 
 # 源码与头文件；CONFIGURE_DEPENDS 使新增文件在下一次 configure 时自动生效。
-# 注意：已移除但尚未物理删除的文件只剩注释，作为空翻译单元参与编译是无害的。
 file(GLOB_RECURSE ATOM_MODULE_SOURCES CONFIGURE_DEPENDS
     "${ATOM_MODULE_DIR}/Src/*.c" "${ATOM_MODULE_DIR}/Src/*.cc"
     "${ATOM_MODULE_DIR}/Src/*.cpp" "${ATOM_MODULE_DIR}/Src/*.cxx")

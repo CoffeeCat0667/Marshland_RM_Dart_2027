@@ -72,14 +72,17 @@ int ToHttpStatus(ErrorCode code) noexcept
 // SSE 推送周期：电机实时显示用 50 ms（20 Hz）
 constexpr std::int64_t kSsePushPeriodMs = 50;
 
-// 允许前端写入的通道（速度/输入通道；CH1 保留、CH5 控制权、CH6 急停、
-// CH7 发射、CH14~16 保留一律不收）
+// 允许前端写入的通道（速度/输入通道 + CH5 控制权、CH7 发射、CH13 供弹；
+// CH1 保留、CH6 急停、CH14~16 保留一律不收）
 bool channelWritable(int ch) noexcept
 {
     switch (ch) {
+    case 5:                                 // 控制权分配（<0=AUTO，>=0=WEB）
+    case 7:                                 // 发射舵机（-100 触发 / 100 常态）
     case 2: case 3: case 4:                 // 蓄力 / 换弹 / YAW（机构速度）
     case 8: case 9: case 10: case 11:       // 蓄力/换弹左右电机
-    case 12: case 13:                       // 变力 rpm / 供弹输入
+    case 12:                                // 变力 rpm
+    case 13:                                // 供弹舵机（-100 触发 / 100 常态）
         return true;
     default:
         return false;

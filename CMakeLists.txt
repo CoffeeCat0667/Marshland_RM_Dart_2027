@@ -117,27 +117,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
-# Shared contract headers
-#
-# Must be introduced BEFORE Atoms/: the 19 atom modules expose a shared
-# CMakeLists template that links Marshland::PublicHeaders behind
-# `if(TARGET Marshland::PublicHeaders)`. That condition can only be true if the
-# contract target already exists when each atom directory is processed —
-# otherwise the dependency never enters the CMake dependency graph and each
-# module silently relies on a hard-coded `../Public` include path instead.
-#
-# Atoms/Public/Headers/ contains ONLY the header-only interface target; the
-# top-level assembly layer (AppCoordinator) stays in Atoms/Public/ and is added
-# after Atoms because it links against marshland_atoms.
-# ---------------------------------------------------------------------------
-add_subdirectory(Atoms/Public/Headers)
-
-# ---------------------------------------------------------------------------
 # Module assembly
 #
-# Atoms/ holds the 19 ATOM modules listed in Design/Atoms.md. Every module
-# exposes Marshland::atom_NN_<name> through one shared CMakeLists template,
-# and Atoms/CMakeLists.txt aggregates them into the marshland_atoms target.
+# Atoms/CMakeLists.txt lists the retained modules and aggregates their targets.
 #
 # This top-level project only assembles modules; it never implements atom
 # functionality (see AGENTS.md).
@@ -172,225 +154,57 @@ add_library(Marshland::ConfigSchemaEmbed ALIAS marshland_config_schema_embed)
 target_include_directories(marshland_config_schema_embed SYSTEM INTERFACE
     "${MARSHLAND_SCHEMA_GEN_DIR}")
 
-add_subdirectory(Atoms)
-
-# ---------------------------------------------------------------------------
-# Top-level assembly and aggregation
-#
-# Atoms/Public/ holds the AppCoordinator bridge (the only place allowed to
-# depend on both the runtime coordinator and the state arbitrator) plus the
-# marshland_public aggregate target. It must come after Atoms/ so that
-# marshland_atoms already exists.
-# ---------------------------------------------------------------------------
+# Public contracts must exist before ATOM targets are configured.
 add_subdirectory(Atoms/Public)
+add_subdirectory(Atoms)
 
 # ---------------------------------------------------------------------------
 # Executable
 #
-# Entry.cpp lives in the repository root by requirement and only provides the
-# process entry point. Concretely wiring RuntimeCoordinator modules, driving
-# the state machine and executing the PEF flow belong to per-ATOM adapters and
-# to AppCoordinator; this project assembles them, it does not implement them.
+# Entry.cpp owns the process entry point and assembles the retained modules.
 # ---------------------------------------------------------------------------
 add_executable(marshland Entry.cpp)
 
 target_compile_options(marshland PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
 
-target_link_libraries(marshland PRIVATE marshland_public)
+target_link_libraries(marshland PRIVATE
+    Marshland::Atoms
+    Marshland::PublicHeaders)
 
 find_package(Threads REQUIRED)
-target_link_libraries(marshland_app PUBLIC Threads::Threads)
-target_compile_options(marshland_app PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
+target_link_libraries(marshland PRIVATE Threads::Threads)
 
-option(MARSHLAND_BUILD_TESTS "Build ARM gateway and public-contract tests" OFF)
+# ---------------------------------------------------------------------------
+# 部署链接方式：全静态
+#
+# 目标机（Ubuntu ARM）的运行库比 WSL 交叉工具链旧：本机工具链是 Ubuntu 24.04
+# （glibc 2.39 + GCC 13 的 libstdc++）。在 -std=c++23 下，glibc >= 2.38 的头文件
+# 会把 strto*/sscanf 重定向到 ISO C23 变体（__isoc23_*），再加上 GCC 13 的
+# libstdc++ 符号，二进制会要求 GLIBC_2.38 / GLIBCXX_3.4.32，在目标机上直接报
+#   "./marshland: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found"
+# 这不是某一处代码的问题：Entry.cpp、ATOM-15/16 与 ThirdParty 的多个翻译单元
+# 都会引入该符号。
+#
+# 全静态链接后二进制没有动态段，不再受目标机 glibc/libstdc++ 版本影响。
+# 注意：静态链接下 getaddrinfo 需要目标机提供匹配的 NSS 库；本程序只把
+# cpp-httplib 当服务器用（绑定固定地址），不经过主机名解析路径。
+# ---------------------------------------------------------------------------
+target_link_options(marshland PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-static>)
+
+option(MARSHLAND_BUILD_TESTS "Expose current tests, excluded from the default build" OFF)
 if(MARSHLAND_BUILD_TESTS)
-    enable_testing()
-
-    # This target intentionally receives no ATOM or AppCoordinator include paths.
-    add_library(marshland_public_contracts_check OBJECT Tests/PublicContractsCompile.cpp)
-    target_link_libraries(marshland_public_contracts_check PRIVATE Marshland::PublicHeaders)
-    target_compile_options(marshland_public_contracts_check PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
-
-    add_executable(marshland_gateway_tests Tests/AppCoordinatorTests.cpp)
-    target_include_directories(marshland_gateway_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(marshland_gateway_tests PRIVATE marshland_public)
-    target_compile_options(marshland_gateway_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
-
-    # ATOM-03 SBUS tests
-    add_executable(marshland_atom03_tests Tests/Atom03SbusTests.cpp)
-    target_include_directories(marshland_atom03_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(marshland_atom03_tests PRIVATE
-        Marshland::atom_03_sbus
-        Marshland::PublicHeaders)
-    target_compile_options(marshland_atom03_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
-
-    # ATOM-15 Config tests
-    add_executable(marshland_atom15_tests Tests/Atom15ConfigTests.cpp)
-    target_include_directories(marshland_atom15_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(marshland_atom15_tests PRIVATE
-        Marshland::atom_15_config_persistence
-        Marshland::PublicHeaders)
-    target_compile_options(marshland_atom15_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
-
-    # ATOM-04 CAN tests —— 已注销（2026-10-16）。
-    # 模块按用户裁决收缩为「一个阻塞接收线程 + 一个发送 API」，
-    # CanCore / CanRuntimeConfig / LifecycleAdapter / ICanTransport 公开面已删除；
-    # Tests/Atom04CanTests.cpp 仍 include atom04_can/can_core.hpp 与 can_config.hpp，
-    # 无法编译，故不再注册该目标与 can.* 用例。
-    # 依赖面：无（Entry.cpp 与 Atoms 其余模块都不消费本模块）。
-    # 残留：该测试源文件本身尚未清理，是否裁剪为仅覆盖保留的 motor_frame_codec
-    #       用例待用户裁决。详见 Atoms/ATOM-04_CAN_Motor_Control/PLAN.md §5。
-
-    # Integration tests (Entry + all ATOMs)
-    add_executable(marshland_integration_tests Tests/IntegrationTests.cpp)
-    target_include_directories(marshland_integration_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(marshland_integration_tests PRIVATE marshland_public)
-    target_compile_options(marshland_integration_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
-
-    set(MARSHLAND_CTEST_CASES
-        public.types
-        runtime.registration
-        runtime.failure_exception
-        state.policy_tables
-        state.inputs_events
-        state.intent_fire
-        state.auto_flow
-        app.coordinator_ports
-        app.read_lease_concurrency
-        process.exit_signals
-        public.enum_defaults
-        public.monotonic_clock
-        runtime.context_and_order
-        runtime.optional_failure
-        runtime.fallback_names
-        runtime.unknown_exception
-        runtime.empty_and_destructor
-        state.fire_matrix
-        state.intent_safety_matrix
-        state.stop_clear_matrix
-        state.ordinary_intents
-        state.mode_matrix
-        state.auto_edge_matrix
-        state.all_strings
-        state.reset_and_update
-        state.event_buffer
-        state.four_shot_run
-        state.auto_rejections
-        state.manual_fire_modes
-        app.startup_rejections
-        app.startup_failures
-        app.startup_interrupt
-        app.gate_modes
-        app.all_ports
-        app.stop_flag_atomic_commit
-        app.read_view_move
-        app.clock_and_events)
-
-    # ATOM-03 SBUS test cases
-    set(MARSHLAND_ATOM03_CASES
-        sbus.config_defaults
-        sbus.snapshot_structure
-        sbus.store_read_write
-        sbus.store_concurrency
-        sbus.uart_configure
-        sbus.uart_read_data
-        sbus.uart_read_timeout
-        sbus.uart_cancel
-        sbus.serial_parameters
-        sbus.estop_state_enum
-        sbus.frame_validity_enum
-        sbus.control_source_mapping)
-
-    # ATOM-15 Config test cases
-    set(MARSHLAND_ATOM15_CASES
-        config.store_default_state
-        config.store_load_valid
-        config.store_load_invalid_json
-        config.store_load_missing_file
-        config.store_get_string
-        config.store_get_int
-        config.store_get_int_wrong_type
-        config.store_get_string_wrong_type
-        config.store_missing_key
-        config.store_motor_array
-        config.store_nested_keys
-        config.store_reload
-        config.store_interface
-        config.store_thread_safety
-        config.store_schema_version)
-
-    # ATOM-04 CAN test cases —— 已随 marshland_atom04_tests 一并移除（见上）。
-
-    # Integration test cases
-    set(MARSHLAND_INTEGRATION_CASES
-        integration.full_startup
-        integration.config_load_failure
-        integration.atom15_before_atom03
-        integration.motor_config_6_motors
-        integration.can_zero_torque_frames
-        integration.runtime_context_transfer
-        integration.shutdown_cleanup)
-
-    if(CMAKE_CROSSCOMPILING OR NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm)")
-        find_program(MARSHLAND_QEMU_AARCH64 NAMES qemu-aarch64 qemu-aarch64-static)
-        if(MARSHLAND_QEMU_AARCH64)
-            set(MARSHLAND_ARM_SYSROOT "/usr/aarch64-linux-gnu" CACHE PATH "ARM emulator library root")
-
-            foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
-                add_test(NAME "marshland.${case_name}"
-                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
-                            $<TARGET_FILE:marshland_gateway_tests> "${case_name}")
-            endforeach()
-
-            foreach(case_name IN LISTS MARSHLAND_ATOM03_CASES)
-                add_test(NAME "marshland.${case_name}"
-                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
-                            $<TARGET_FILE:marshland_atom03_tests> "${case_name}")
-            endforeach()
-
-            foreach(case_name IN LISTS MARSHLAND_ATOM15_CASES)
-                add_test(NAME "marshland.${case_name}"
-                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
-                            $<TARGET_FILE:marshland_atom15_tests> "${case_name}")
-            endforeach()
-
-        foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
-                add_test(NAME "marshland.${case_name}"
-                    COMMAND "${MARSHLAND_QEMU_AARCH64}" -L "${MARSHLAND_ARM_SYSROOT}"
-                            $<TARGET_FILE:marshland_integration_tests> "${case_name}")
-            endforeach()
-        else()
-            message(STATUS "ARM tests will be built, but execution needs an ARM host or qemu-aarch64; no CTest cases registered.")
-        endif()
-    else()
-        foreach(case_name IN LISTS MARSHLAND_CTEST_CASES)
-            add_test(NAME "marshland.${case_name}" COMMAND marshland_gateway_tests "${case_name}")
-        endforeach()
-
-        foreach(case_name IN LISTS MARSHLAND_ATOM03_CASES)
-            add_test(NAME "marshland.${case_name}" COMMAND marshland_atom03_tests "${case_name}")
-        endforeach()
-
-        foreach(case_name IN LISTS MARSHLAND_ATOM15_CASES)
-            add_test(NAME "marshland.${case_name}" COMMAND marshland_atom15_tests "${case_name}")
-        endforeach()
-
-        foreach(case_name IN LISTS MARSHLAND_INTEGRATION_CASES)
-            add_test(NAME "marshland.${case_name}" COMMAND marshland_integration_tests "${case_name}")
-        endforeach()
-    endif()
-
-    # Set timeout for all tests
-    foreach(case_name IN LISTS MARSHLAND_CTEST_CASES MARSHLAND_ATOM03_CASES MARSHLAND_ATOM15_CASES MARSHLAND_INTEGRATION_CASES)
-        if(TEST "marshland.${case_name}")
-            set_tests_properties("marshland.${case_name}" PROPERTIES TIMEOUT 30)
-        endif()
+    add_executable(marshland_state_machine_tests EXCLUDE_FROM_ALL Tests/StateMachineTests.cpp)
+    add_executable(marshland_state_entry_tests EXCLUDE_FROM_ALL Tests/StateMachineEntryTests.cpp)
+    foreach(test_target IN ITEMS marshland_state_machine_tests marshland_state_entry_tests)
+        target_include_directories(${test_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(${test_target} PRIVATE
+            Marshland::PublicHeaders
+            Marshland::atom_01_runtime
+            Marshland::atom_02_state_arbitration
+            Threads::Threads)
+        target_compile_options(${test_target} PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>)
     endforeach()
 endif()

@@ -66,17 +66,47 @@ json* member(json* v, std::string_view key)
     return it == v->end() ? nullptr : &*it;
 }
 
+// 段语法：`name` 或 `name[index]`（每段最多一个下标）。写入侧的 mutablePath 未扩展。
 const json* findPath(const json& root, std::string_view key)
 {
     const json* v = &root;
     std::size_t begin = 0;
-    while (begin < key.size()) {
+    while (begin < key.size() && v) {
         const auto end = key.find('.', begin);
         const auto segment = key.substr(
             begin, end == std::string_view::npos ? key.size() - begin : end - begin);
-        v = member(v, segment);
-        if (!v) {
+
+        const auto bracket = segment.find('[');
+        const auto name = segment.substr(0, bracket);
+        if (name.empty() && bracket == std::string_view::npos) {
             return nullptr;
+        }
+        if (!name.empty()) {
+            v = member(v, name);
+            if (!v) {
+                return nullptr;
+            }
+        }
+        if (bracket != std::string_view::npos) {
+            const auto close = segment.find(']', bracket);
+            if (close == std::string_view::npos || !v->is_array()) {
+                return nullptr;
+            }
+            const auto digits = segment.substr(bracket + 1, close - bracket - 1);
+            if (digits.empty()) {
+                return nullptr;
+            }
+            std::size_t index = 0;
+            for (const char c : digits) {
+                if (c < '0' || c > '9') {
+                    return nullptr;
+                }
+                index = index * 10 + static_cast<std::size_t>(c - '0');
+            }
+            if (index >= v->size()) {
+                return nullptr;
+            }
+            v = &(*v)[index];
         }
         if (end == std::string_view::npos) {
             break;
@@ -275,7 +305,6 @@ struct ConfigStore::Impl final
     mutable std::shared_mutex mutex;
     std::shared_ptr<json> snapshot;
     std::filesystem::path file_path;
-    std::vector<ConfigDiagnostic> diagnostics;
     ChangeCallback callback;
     std::uint64_t version{0};
 };
@@ -321,7 +350,6 @@ ConfigLoadResult ConfigStore::load(const std::filesystem::path& file)
         std::unique_lock lock(impl_->mutex);
         impl_->snapshot = std::make_shared<json>(std::move(parsed));
         impl_->file_path = file;
-        impl_->diagnostics = result.diagnostics;
         ++impl_->version;
     }
     result.success = true;
@@ -329,35 +357,126 @@ ConfigLoadResult ConfigStore::load(const std::filesystem::path& file)
     return result;
 }
 
-ConfigLoadResult ConfigStore::reload()
+ConfigStatus ConfigStore::get(const char* path, ConfigValue& out) const noexcept
 {
-    std::filesystem::path path;
-    {
+    try {
         std::shared_lock lock(impl_->mutex);
-        path = impl_->file_path;
+        if (!impl_->snapshot) {
+            return ConfigStatus::NOT_LOADED;
+        }
+        const json* v = findPath(*impl_->snapshot, path ? path : "");
+        if (!v) {
+            return ConfigStatus::MISSING;
+        }
+        if (v->is_null()) {
+            out = std::monostate{}; // 显式"待定"，与键缺失区分开
+        } else if (v->is_string()) {
+            out = v->get_ref<const std::string&>();
+        } else if (v->is_boolean()) {
+            out = v->get<bool>();
+        } else if (integer(*v)) {
+            out = intValue(*v);
+        } else if (number(*v)) {
+            out = v->get<double>();
+        } else {
+            return ConfigStatus::INVALID_TYPE; // 数组/对象本身：改用 getArraySize + 索引
+        }
+        return ConfigStatus::OK;
+    } catch (...) {
+        return ConfigStatus::INVALID_TYPE;
     }
-    if (path.empty()) {
-        return {false, ConfigError::NOT_LOADED, {{"", "no configuration path", false}}};
+}
+
+ConfigStatus ConfigStore::getInt(const char* path, std::int64_t& out) const noexcept
+{
+    ConfigValue v;
+    if (const auto status = get(path, v); status != ConfigStatus::OK) {
+        return status;
     }
-    return load(path);
+    const auto* p = std::get_if<std::int64_t>(&v);
+    if (!p) {
+        return ConfigStatus::INVALID_TYPE;
+    }
+    out = *p;
+    return ConfigStatus::OK;
 }
 
-std::filesystem::path ConfigStore::path() const
+ConfigStatus ConfigStore::getDouble(const char* path, double& out) const noexcept
 {
-    std::shared_lock lock(impl_->mutex);
-    return impl_->file_path;
+    ConfigValue v;
+    if (const auto status = get(path, v); status != ConfigStatus::OK) {
+        return status;
+    }
+    // JSON Schema 的 number 接受整数写法，因此整数按 double 取出（只放宽这一向；反向不放宽）
+    if (const auto* p = std::get_if<double>(&v)) {
+        out = *p;
+        return ConfigStatus::OK;
+    }
+    if (const auto* i = std::get_if<std::int64_t>(&v)) {
+        out = static_cast<double>(*i);
+        return ConfigStatus::OK;
+    }
+    return ConfigStatus::INVALID_TYPE;
 }
 
-std::vector<ConfigDiagnostic> ConfigStore::diagnostics() const
+ConfigStatus ConfigStore::getBool(const char* path, bool& out) const noexcept
 {
-    std::shared_lock lock(impl_->mutex);
-    return impl_->diagnostics;
+    ConfigValue v;
+    if (const auto status = get(path, v); status != ConfigStatus::OK) {
+        return status;
+    }
+    const auto* p = std::get_if<bool>(&v);
+    if (!p) {
+        return ConfigStatus::INVALID_TYPE;
+    }
+    out = *p;
+    return ConfigStatus::OK;
 }
 
-void ConfigStore::setChangeCallback(ChangeCallback callback)
+ConfigStatus ConfigStore::getString(const char* path, std::string& out) const noexcept
 {
-    std::unique_lock lock(impl_->mutex);
-    impl_->callback = std::move(callback);
+    ConfigValue v;
+    if (const auto status = get(path, v); status != ConfigStatus::OK) {
+        return status;
+    }
+    const auto* p = std::get_if<std::string>(&v);
+    if (!p) {
+        return ConfigStatus::INVALID_TYPE;
+    }
+    out = *p;
+    return ConfigStatus::OK;
+}
+
+ConfigStatus ConfigStore::getArraySize(const char* path,
+                                       std::uint64_t& out) const noexcept
+{
+    try {
+        std::shared_lock lock(impl_->mutex);
+        if (!impl_->snapshot) {
+            return ConfigStatus::NOT_LOADED;
+        }
+        const json* v = findPath(*impl_->snapshot, path ? path : "");
+        if (!v) {
+            return ConfigStatus::MISSING;
+        }
+        if (!v->is_array()) {
+            return ConfigStatus::INVALID_TYPE;
+        }
+        out = v->size();
+        return ConfigStatus::OK;
+    } catch (...) {
+        return ConfigStatus::INVALID_TYPE;
+    }
+}
+
+std::uint64_t ConfigStore::configVersion() const noexcept
+{
+    try {
+        std::shared_lock lock(impl_->mutex);
+        return impl_->version;
+    } catch (...) {
+        return 0;
+    }
 }
 
 PersistResult ConfigStore::updateRuntime(const char* key, const ConfigValue& value,

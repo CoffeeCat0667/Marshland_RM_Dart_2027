@@ -291,4 +291,24 @@ const auto result = store.updateRuntime(
 
 验证：`cmake --build cmake-build-ubuntu-arm --target atom_15_config_persistence --parallel 4` 增量编译通过，无告警。仍未运行任何 ARM 二进制。
 
+### 12.6 按值取键与公开面收敛（2026-10-16，用户授权）
+
+按用户裁决恢复**只读查询能力**，并且只加 3 个方法：
+
+- `get(const char* path, ConfigValue& out) const noexcept` —— 按值取键。`path` 支持 `a.b` 与 `a[3].b`（每段最多一个下标）；成功时 `out` 是快照值的**副本**（`std::string` 拷贝，无悬垂）；JSON `null` 以 `std::monostate` 返回 `OK`，与"键缺失（`MISSING`）"区分；数组/对象本身返回 `INVALID_TYPE`。
+- `getArraySize(const char* path, std::uint64_t& out) const noexcept` —— 数组长度。
+- `configVersion() const noexcept` —— 每次成功 `load` 或热更新自增；`0` 表示从未加载。消费方据此决定是否重读。
+- `getInt` / `getDouble` / `getBool` / `getString(const char*, T&) const noexcept` —— 类型化包装，语义与 `get` 一致，只省掉调用方的 variant 判定；消费方优先用这四个，`get` 留给枚举字符串与尚未类型化的值。`getDouble` 额外接受整数写法（JSON Schema 的 `number` 本就接受整数，只放宽这一向，反向不放宽）。
+
+配套：新增 `enum class ConfigStatus { OK, NOT_LOADED, MISSING, INVALID_TYPE }`（4 态，均由实现真实产生）。`findPath()` 扩展为支持 `[n]` 段；`mutablePath()` **未扩展**，因此 `updateRuntime` 的路径仍只支持点分形式（带下标会安全地返回 `MISSING`，不会误写）。
+
+按中等方案删除 4 个公开方法：`reload()`（= 再次 `load` 同一路径）、`path()`、`diagnostics()`、`setChangeCallback()`（构造期已可注入回调）。连带删除 `Impl::diagnostics` 成员与 `load()` 中的赋值。
+
+**最终公开面（16 个声明）**：`ctor(ChangeCallback)` / `dtor` / `load` / `get` / `getInt` / `getDouble` / `getBool` / `getString` / `getArraySize` / `configVersion` / `updateRuntime`(批量) / `updateRuntime`(单键) / `readPid` / `writePid` / `readReserved` / `writeReserved`。
+
+保留 `readPid`/`writePid`/`readReserved`/`writeReserved` 的理由：承载设计条款 13/14/15（PID 读写、100 个预留变量）与 1..100 边界检查；删除它们会把 id→索引扫描成本转给每个消费方，并静默丢掉该边界（Schema 的 `^reserved_[0-9]{3}$` 实际允许 `000` 与 `101..999`）。
+
+验证：增量编译通过（`config_store.cpp` 重编、`libatom_15_config_persistence.a` 链接成功），无告警。未运行任何 ARM 二进制。仍遗留：`Entry.cpp`、`Tests/Atom15ConfigTests.cpp`、`Atoms/Public/IConfigView.hpp` 归属声明、`Design/Atomic/ATOM-15_Config_Persistence.md` 职责记录需由用户/文档拥有者同步。
+
+
 

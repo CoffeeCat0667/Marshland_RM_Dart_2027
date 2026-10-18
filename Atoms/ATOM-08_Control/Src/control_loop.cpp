@@ -61,8 +61,8 @@ constexpr std::uint8_t kServoChannelFire = 5U; // 开火舵机（PCA9685 通道 
 constexpr std::uint8_t kServoChannelFeed = 6U; // 供弹舵机（PCA9685 通道 6，id = 6）
 constexpr double kFireStandbyDeg = 90.0;
 constexpr double kFireActionDeg = 180.0;
-constexpr double kFeedStandbyDeg = 90.0;
-constexpr double kFeedActionDeg = 70.0;
+constexpr double kFeedStandbyDeg = 165.0;
+constexpr double kFeedActionDeg = 180.0;
 
 using Channels = std::array<std::int32_t, marshland::sbus::kChannelCount>;
 
@@ -79,14 +79,25 @@ Channels CopyChannels(const marshland::web::WebData& data) noexcept
     return data.scaled_channels;
 }
 
+// 用户裁决（2026-10-17）：0x202（蓄力左）与 0x203（换弹右）的安装方向与通道正方向
+// 相反，写目标前需**软件取负补偿**；其余电机按原值下发。
+constexpr bool NeedsSignInversion(std::uint32_t node_id) noexcept
+{
+    return node_id == kNodeChargeLeft || node_id == kNodeReloadRight;
+}
+
 // D6：越界即拒绝（保持旧目标），不钳位、不打印、不上报。
 void WriteRpm(marshland::motor::IMotorControl& motors, std::uint32_t node_id,
               std::int32_t rpm) noexcept
 {
-    if (rpm < marshland::motor::kMinTargetRpm || rpm > marshland::motor::kMaxTargetRpm) {
+    // 取负用 int64 计算，避免极端输入在 int32 上溢出。
+    const std::int64_t effective =
+        NeedsSignInversion(node_id) ? -static_cast<std::int64_t>(rpm) : rpm;
+    if (effective < marshland::motor::kMinTargetRpm ||
+        effective > marshland::motor::kMaxTargetRpm) {
         return;
     }
-    (void)motors.setRpm(node_id, static_cast<std::int16_t>(rpm));
+    (void)motors.setRpm(node_id, static_cast<std::int16_t>(effective));
 }
 
 // 机构速度：整体键（CH2 / CH3）非零时覆盖左右键，否则左右键各写各的。

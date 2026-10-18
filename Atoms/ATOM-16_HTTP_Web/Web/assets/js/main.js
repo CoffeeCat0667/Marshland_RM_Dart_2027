@@ -6,6 +6,7 @@
 //   摇杆控制数据：    POST /api/control/channels（仅控制源为 WEB 时服务端受理）
 //
 // 摇杆 → WebData 通道映射：蓄力→CH2、换弹→CH3、YAW→CH4、变力→CH12
+// 控制权 → CH5：< 0 = AUTO，>= 0 = WEB（仅符号有意义）
 // ============================================================================
 
 const $ = (id) => document.getElementById(id);
@@ -61,7 +62,7 @@ es.addEventListener("status", (e) => renderStatus(JSON.parse(e.data)));
 es.onopen = () => { setConn(true); pushLog("已连接 /api/stream 实时推送"); };
 es.onerror = () => setConn(false);   // EventSource 自动重连
 
-// ---------- 摇杆（纵向，±5000 线性映射，接真实接口） ----------
+// ---------- 摇杆（YAW 横向，其余纵向；±1000 线性映射，接真实接口） ----------
 const JOY_CHANNEL = { "蓄力": 2, "换弹": 3, "YAW": 4, "变力": 12 };
 const SEND_INTERVAL_MS = 50;
 
@@ -83,6 +84,7 @@ function setupJoystick(el) {
   const max = Number(el.dataset.max);
   const name = el.dataset.name;
   const channel = JOY_CHANNEL[name];
+  const horizontal = el.dataset.axis === "x";   // YAW 横向，其余纵向
   const knob = el.querySelector(".joy-knob");
   const readout = el.parentElement.querySelector(".joy-readout b");
   const meter = el.parentElement.querySelector(".joy-meter .fill");
@@ -91,7 +93,9 @@ function setupJoystick(el) {
   let lastSent = 0;
   let lastValue = null;
 
-  const travel = () => el.clientHeight / 2 - knob.offsetHeight / 2 - 6;
+  const travel = () => horizontal
+    ? el.clientWidth / 2 - knob.offsetWidth / 2 - 6
+    : el.clientHeight / 2 - knob.offsetHeight / 2 - 6;
 
   function send(value, force) {
     const now = performance.now();
@@ -102,12 +106,15 @@ function setupJoystick(el) {
     sendChannel(channel, value);
   }
 
-  function apply(dy) {
+  function apply(d) {
     const t = travel();
-    dy = Math.max(-t, Math.min(t, dy));    // 纵向限幅，水平锁定
-    knob.style.transform = `translate(-50%, calc(-50% + ${dy}px))`;
+    d = Math.max(-t, Math.min(t, d));      // 单轴限幅，另一轴锁定
+    knob.style.transform = horizontal
+      ? `translate(calc(-50% + ${d}px), -50%)`
+      : `translate(-50%, calc(-50% + ${d}px))`;
 
-    const value = Math.round((-dy / t) * max);   // 线性映射，满偏 = ±max
+    // 线性映射，满偏 = ±max；纵向以上推为正，横向以右推为正
+    const value = Math.round((horizontal ? d : -d) / t * max);
     readout.textContent = value;
     readout.className = value > 0 ? "pos" : value < 0 ? "neg" : "";
 
@@ -129,17 +136,21 @@ function setupJoystick(el) {
     send(0, true);   // 松手回中必须发 0
   }
 
+  const offsetOf = (e) => {
+    const r = el.getBoundingClientRect();
+    return horizontal ? e.clientX - (r.left + r.width / 2)
+                      : e.clientY - (r.top + r.height / 2);
+  };
+
   el.addEventListener("pointerdown", (e) => {
     dragging = true;
     el.classList.add("active");
     el.setPointerCapture(e.pointerId);
-    const r = el.getBoundingClientRect();
-    apply(e.clientY - (r.top + r.height / 2));
+    apply(offsetOf(e));
   });
   el.addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    const r = el.getBoundingClientRect();
-    apply(e.clientY - (r.top + r.height / 2));
+    apply(offsetOf(e));
   });
   const release = (e) => {
     if (!dragging) return;
@@ -153,6 +164,18 @@ function setupJoystick(el) {
 }
 
 document.querySelectorAll(".joy").forEach(setupJoystick);
+
+// ---------- 控制权切换（CH5：<0 = AUTO，>=0 = WEB） ----------
+const CH5_AUTO = -1;
+const CH5_WEB = 0;
+let ch5IsWeb = false;   // 页面初始不写 CH5；首次点击切到 WEB
+
+$("ch5Btn").addEventListener("click", () => {
+  ch5IsWeb = !ch5IsWeb;
+  sendChannel(5, ch5IsWeb ? CH5_WEB : CH5_AUTO);
+  $("ch5Btn").textContent = ch5IsWeb ? "控制权 → AUTO" : "控制权 → WEB";
+  pushLog(`控制权已请求：${ch5IsWeb ? "WEB" : "AUTO"}`);
+});
 
 // ---------- 底部日志 ----------
 function pushLog(text) {
@@ -169,12 +192,19 @@ function tickClock() {
   $("logTime").textContent = t;
 }
 
-// 手动控制按钮：控制通道未在本阶段范围，仅提示
-document.querySelectorAll(".ctl").forEach((btn) => {
-  btn.addEventListener("click", () => pushLog(`「${btn.textContent}」通道未接入`));
+// 手动控制按钮：供弹 CH13 / 发射 CH7（-100 保持后恢复 100）
+$("btnFeed").addEventListener("click", () => {
+  sendChannel(13, -100);
+  setTimeout(() => sendChannel(13, 100), 100);
+});
+$("btnFire").addEventListener("click", () => {
+  sendChannel(7, -100);
+  setTimeout(() => sendChannel(7, 100), 1000);
 });
 $("estopBtn").addEventListener("click", () => pushLog("急停通道未接入（本阶段仅电机显示与摇杆通道）"));
 
 // ---------- 启动 ----------
+sendChannel(7, 100);    // 发射舵机常态
+sendChannel(13, 100);   // 供弹舵机常态
 tickClock();
 setInterval(tickClock, 1000);

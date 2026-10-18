@@ -1,4 +1,4 @@
-# Focused incremental ARM checks while the root CMake assembly is unavailable.
+# Focused incremental ARM checks, independent of the root CMake build.
 # Run from the repository root inside WSL. No clean target is provided.
 CXX := aarch64-linux-gnu-g++
 BUILD_DIR ?= cmake-build-ubuntu-arm/atom02-check
@@ -13,7 +13,7 @@ LDLIBS := -pthread
 
 .PHONY: all
 all: $(BUILD_DIR)/state_machine_tests $(BUILD_DIR)/entry_smoke $(BUILD_DIR)/state_entry_tests \
-     $(BUILD_DIR)/http.o $(BUILD_DIR)/control.o $(BUILD_DIR)/example.o
+     $(BUILD_DIR)/http.o $(BUILD_DIR)/control.o
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -38,9 +38,6 @@ $(BUILD_DIR)/http.o: Atoms/ATOM-16_HTTP_Web/Src/HttpServer.cpp | $(BUILD_DIR)
 
 $(BUILD_DIR)/control.o: Atoms/ATOM-08_Control/Src/control_loop.cpp | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) -IAtoms/ATOM-08_Control/Inc $(CXXFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/example.o: Atoms/ATOM-01_Runtime/Example_Integration.cpp | $(BUILD_DIR)
-	$(CXX) $(CPPFLAGS) -IAtoms/ATOM-01_Runtime/Inc $(CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/state_machine_tests: $(BUILD_DIR)/tests.o $(BUILD_DIR)/state.o $(BUILD_DIR)/runtime.o
 	$(CXX) $^ $(LDLIBS) -o $@

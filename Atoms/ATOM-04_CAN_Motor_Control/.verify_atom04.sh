@@ -59,6 +59,16 @@ if grep -rnE '#include[[:space:]]*"(AppCoordinator|RuntimeCoordinator|StateArbit
   echo "  FAIL 出现禁止的横向依赖"; fail=1
 else echo "  OK   无横向 ATOM 依赖"; fi
 
+# 接口拉起（方案 A：调用 ip 命令，波特率硬编码 1000000）
+if grep -q 'ip link set' "$M/Src/can_motor_control.cpp" && \
+   grep -q 'bringUpInterface' "$M/Src/can_motor_control.cpp"; then
+  echo "  OK   接口拉起逻辑存在（ip link set，bitrate 硬编码）"
+else echo "  FAIL 接口拉起逻辑缺失"; fail=1; fi
+
+if grep -q 'isValidInterfaceName' "$M/Src/can_motor_control.cpp"; then
+  echo "  OK   接口名注入边界存在（isValidInterfaceName）"
+else echo "  FAIL 缺少接口名校验（system 注入风险）"; fail=1; fi
+
 if grep -q 'ATOM_MODULE_TARGET atom_04_can_motor_control' "$M/CMakeLists.txt"; then
   echo "  OK   CMake 目标名 = atom_04_can_motor_control"
 else echo "  FAIL CMake 目标名不符"; fail=1; fi
@@ -83,7 +93,9 @@ if grep -q 'class IMotorControl' "$PUBHDR"; then
   echo "  OK   公共端口 IMotorControl 存在"
 else echo "  FAIL 公共端口 IMotorControl 缺失"; fail=1; fi
 
-if grep -q 'Motor.hpp' "$P/Atoms/Public/Headers/CMakeLists.txt"; then
+# 登记点可能在 Atoms/Public/CMakeLists.txt 或其它 CMakeLists（目录结构曾重构过），
+# 因此递归查找，不绑定具体文件路径。
+if grep -rq --include=CMakeLists.txt 'Motor\.hpp' "$P/Atoms/Public" 2>/dev/null; then
   echo "  OK   Motor.hpp 已登记进 Marshland::PublicHeaders"
 else echo "  FAIL Motor.hpp 未登记进公共头目标"; fail=1; fi
 

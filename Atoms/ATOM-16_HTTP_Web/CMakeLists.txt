@@ -69,8 +69,7 @@ else()
         Marshland::ThirdPartyHttplib Marshland::ThirdPartyNlohmannJson)
 endif()
 
-# 本模块只消费 Public/Headers/Web.hpp（自身对外契约：WebData + RunHttpServer），
-# 不消费其他 Public 接口。
+# 本模块消费 Public/Web.hpp、IStateMachine.hpp 及电机状态公共契约。
 if(TARGET Marshland::PublicHeaders)
     target_link_libraries(${ATOM_MODULE_TARGET} ${ATOM_MODULE_SCOPE}
         Marshland::PublicHeaders)

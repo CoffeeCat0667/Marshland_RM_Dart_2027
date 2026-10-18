@@ -6,6 +6,7 @@
 namespace marshland::sbus::detail {
 
 inline constexpr std::size_t kChannelBits = 11U;
+inline constexpr std::size_t kDecodedChannelCount = kChannelCount - 1U;
 inline constexpr std::size_t kMinimumFrameBytes =
     1U + (kChannelCount * kChannelBits + 7U) / 8U;
 inline constexpr std::size_t kReadBatchBytes = 256U;
@@ -39,9 +40,12 @@ private:
     std::size_t size_{0};
 };
 
+// Only CH1..CH15 are decoded; CH16 is ignored and its output slot is zero.
+// On failure, rejected_channel identifies the first out-of-range channel (zero-based).
 bool decodeFrame(const ByteRingBuffer& frame, std::uint8_t scale_x,
                  std::uint16_t center, std::uint16_t minimum, std::uint16_t maximum,
                  std::array<std::uint16_t, kChannelCount>& raw,
-                 std::array<std::int32_t, kChannelCount>& scaled) noexcept;
+                 std::array<std::int32_t, kChannelCount>& scaled,
+                 std::size_t& rejected_channel) noexcept;
 
 } // namespace marshland::sbus::detail
