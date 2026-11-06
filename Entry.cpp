@@ -243,7 +243,8 @@ bool init()
 
 void cleanup()
 {
-    // 配置文件只在本模块的 updateRuntime/writePid 中持久化；关闭时没有待保存状态。
+    // 配置文件的写入路径已按用户授权移除（见 config_store.hpp 的偏离说明）；
+    // 本模块当前只用 load() 读取，关闭时没有待保存状态。
 }
 } // namespace atom15
 
